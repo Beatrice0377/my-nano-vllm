@@ -49,7 +49,6 @@ def store_kvcache(
     )
 
 
-
 @triton.jit
 def _paged_attention_kernel(
     q_ptr,
@@ -194,7 +193,6 @@ def paged_attention(
         num_warps=num_warps,
     )
     return out
-
 
 
 @triton.jit
@@ -368,9 +366,7 @@ def flash_attention(
     return out
 
 
-
 class Attention(nn.Module):
-
     def __init__(
         self,
         num_heads,
@@ -390,15 +386,57 @@ class Attention(nn.Module):
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
-        if context.is_prefill:
-            if context.block_tables is not None:    # prefix cache
+        num_decode = context.num_decode_tokens
+        if num_decode == 0:  # pure prefill
+            if context.block_tables is not None:  # prefix cache
                 k, v = k_cache, v_cache
-            o = flash_attn_varlen_func(q, k, v,
-                                       max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
-                                       max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
-                                       softmax_scale=self.scale, causal=True, block_table=context.block_tables)
-        else:    # decode
-            o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
-                                        cache_seqlens=context.context_lens, block_table=context.block_tables, 
-                                        softmax_scale=self.scale, causal=True)
+            o = flash_attn_varlen_func(
+                q,
+                k,
+                v,
+                max_seqlen_q=context.max_seqlen_q,
+                cu_seqlens_q=context.cu_seqlens_q,
+                max_seqlen_k=context.max_seqlen_k,
+                cu_seqlens_k=context.cu_seqlens_k,
+                softmax_scale=self.scale,
+                causal=True,
+                block_table=context.block_tables,
+            )
+        elif num_decode == q.size(0):  # pure decode
+            o = flash_attn_with_kvcache(
+                q.unsqueeze(1),
+                k_cache,
+                v_cache,
+                cache_seqlens=context.context_lens,
+                block_table=context.block_tables,
+                softmax_scale=self.scale,
+                causal=True,
+            )
+        else:  # mixed: decode rows first, then prefill rows
+            o_d = flash_attn_with_kvcache(
+                q[:num_decode].unsqueeze(1),
+                k_cache,
+                v_cache,
+                cache_seqlens=context.context_lens,
+                block_table=context.block_tables,
+                softmax_scale=self.scale,
+                causal=True,
+            )
+            if context.prefill_block_tables is not None:  # prefix cache
+                k_p, v_p = k_cache, v_cache
+            else:
+                k_p, v_p = k[num_decode:], v[num_decode:]
+            o_p = flash_attn_varlen_func(
+                q[num_decode:],
+                k_p,
+                v_p,
+                max_seqlen_q=context.max_seqlen_q,
+                cu_seqlens_q=context.cu_seqlens_q,
+                max_seqlen_k=context.max_seqlen_k,
+                cu_seqlens_k=context.cu_seqlens_k,
+                softmax_scale=self.scale,
+                causal=True,
+                block_table=context.prefill_block_tables,
+            )
+            o = torch.cat([o_d.squeeze(1), o_p], dim=0)
         return o

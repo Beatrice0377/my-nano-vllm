@@ -1,0 +1,77 @@
+{
+  "environment": {
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5060 Laptop GPU",
+    "python_version": "3.11.14",
+    "torch_version": "2.7.0+cu128",
+    "triton_version": "3.3.1"
+  },
+  "metrics": {
+    "decode_query_tokens_executed": 6841,
+    "decode_steps": 491,
+    "decode_throughput_tokens_per_second": 1669.6413076217673,
+    "decode_wall_seconds": 4.097287224969477,
+    "elapsed_seconds": 5.944879155998933,
+    "input_prepare_decode_calls": 491,
+    "input_prepare_decode_cpu_ms": 178.0872700146574,
+    "input_prepare_prefill_calls": 2,
+    "input_prepare_prefill_cpu_ms": 2.4023130026762374,
+    "output_tokens": 6861,
+    "output_tokens_per_second": 1154.1025174711274,
+    "peak_gpu_memory_allocated_mb": 5833.1640625,
+    "prefill_steps": 2,
+    "prefill_throughput_tokens_per_second": 4373.721744163274,
+    "prefill_tokens_executed": 8050,
+    "prefill_tokens_scheduled": 8050,
+    "prefill_wall_seconds": 1.840537755000696,
+    "prefix_cache_blocks_looked_up": 4,
+    "prefix_cache_cached_blocks": 0,
+    "prefix_cache_cached_tokens": 0,
+    "prefix_cache_hit_rate": 0.0,
+    "prefix_cache_looked_up_tokens": 1024,
+    "prefix_cache_lookup_events": 20,
+    "request_latency_p50_ms": 5034.232644999065,
+    "request_latency_p95_ms": 5891.101375650214,
+    "request_throughput_per_second": 3.3642399576479445,
+    "steps": 493,
+    "timestamped_output_tokens": 6861,
+    "total_tokens_per_second": 2508.2091004244253,
+    "tpot_p50_ms": 9.794304001843557,
+    "tpot_p95_ms": 10.73898799950257,
+    "tpot_sample_count": 6841,
+    "ttft_p50_ms": 1569.0825374986161,
+    "ttft_p95_ms": 1569.1300264477832
+  },
+  "workload": {
+    "enforce_eager": false,
+    "max_batched_tokens": 16384,
+    "max_model_len": 4096,
+    "max_seqs": 512,
+    "model": "/home/beatrice/huggingface/Qwen3-0.6B-local",
+    "name": "contention",
+    "result_path": "/home/beatrice/my-nanovllm/nano-vllm/benchmarks/results/phase5-baseline-contention.json",
+    "seed": 0,
+    "stages": [
+      {
+        "max_input": 128,
+        "max_output": 512,
+        "min_input": 64,
+        "min_output": 256,
+        "output_tokens_requested": 6004,
+        "prompt_tokens_total": 1555,
+        "requests": 16
+      },
+      {
+        "max_input": 2048,
+        "max_output": 256,
+        "min_input": 1024,
+        "min_output": 128,
+        "output_tokens_requested": 857,
+        "prompt_tokens_total": 6495,
+        "requests": 4
+      }
+    ],
+    "warmup_tokens": 1
+  }
+}

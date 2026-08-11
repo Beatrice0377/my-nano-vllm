@@ -38,7 +38,16 @@ WORKLOADS = {
         shared_prefix_tokens=512,
         cold_fraction=0.25,
     ),
+    "contention": dict(staged=True),
 }
+
+# Deterministic two-stage arrival pattern for scheduler contention.
+# Stage 1: short-prompt / long-output requests enter decode first.
+# Stage 2: long-prompt requests are injected once Stage 1 is decoding.
+CONTENTION_STAGES = [
+    dict(requests=16, min_input=64, max_input=128, min_output=256, max_output=512),
+    dict(requests=4, min_input=1024, max_input=2048, min_output=128, max_output=256),
+]
 
 
 @dataclass(slots=True)
@@ -80,6 +89,28 @@ def build_request_specs(args: argparse.Namespace) -> list[RequestSpec]:
             prompt_token_ids = [rng.randrange(10_000) for _ in range(input_len)]
         specs.append(RequestSpec(prompt_token_ids, output_len))
     return specs
+
+
+def build_contention_specs(seed: int) -> list[list[RequestSpec]]:
+    """Generate the two contention stages with a fixed seed.
+
+    Stage 1: 16 short-prompt / long-output requests (enter decode quickly).
+    Stage 2: 4 long-prompt requests injected while Stage 1 is decoding.
+    """
+    stages = []
+    for stage in CONTENTION_STAGES:
+        rng = Random(seed)
+        specs = []
+        for _ in range(stage["requests"]):
+            input_len = rng.randint(stage["min_input"], stage["max_input"])
+            output_len = rng.randint(stage["min_output"], stage["max_output"])
+            specs.append(
+                RequestSpec(
+                    [rng.randrange(10_000) for _ in range(input_len)], output_len
+                )
+            )
+        stages.append(specs)
+    return stages
 
 
 def install_observers(llm):
@@ -136,21 +167,22 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     workload = WORKLOADS[args.workload].copy()
-    for name in workload:
-        value = getattr(args, name)
-        if value is not None:
-            workload[name] = value
-        setattr(args, name, workload[name])
-    if args.requests < 1:
-        parser.error("--requests must be positive")
-    if not 1 <= args.min_input <= args.max_input:
-        parser.error("input length range is invalid")
-    if not 1 <= args.min_output <= args.max_output:
-        parser.error("output length range is invalid")
-    if args.shared_prefix_tokens < 0 or args.shared_prefix_tokens > args.min_input:
-        parser.error("--shared-prefix-tokens must be in [0, --min-input]")
-    if not 0.0 <= args.cold_fraction <= 1.0:
-        parser.error("--cold-fraction must be in [0, 1]")
+    if not workload.get("staged"):
+        for name in workload:
+            value = getattr(args, name)
+            if value is not None:
+                workload[name] = value
+            setattr(args, name, workload[name])
+        if args.requests < 1:
+            parser.error("--requests must be positive")
+        if not 1 <= args.min_input <= args.max_input:
+            parser.error("input length range is invalid")
+        if not 1 <= args.min_output <= args.max_output:
+            parser.error("output length range is invalid")
+        if args.shared_prefix_tokens < 0 or args.shared_prefix_tokens > args.min_input:
+            parser.error("--shared-prefix-tokens must be in [0, --min-input]")
+        if not 0.0 <= args.cold_fraction <= 1.0:
+            parser.error("--cold-fraction must be in [0, 1]")
     if args.output is None:
         args.output = f"benchmarks/results/baseline-{args.workload}.json"
     if args.warmup_tokens < 1:
@@ -239,9 +271,14 @@ def admit_request(
 
 
 def step_once(llm, sequences, lengths_before_step, token_timestamps, stats):
-    """Run one engine step and record its per-sequence token timestamps."""
+    """Run one engine step and record its per-sequence token timestamps.
+
+    A mixed scheduler step performs decode and prefill work together, so a
+    single step wall time is recorded once and attributed to the phase the
+    step's work belongs to; it is never split into additive per-phase times.
+    """
     step_started = perf_counter()
-    _, num_tokens = llm.step()
+    _, num_prefill, num_decode = llm.step()
     import torch
 
     torch.cuda.synchronize()
@@ -257,13 +294,18 @@ def step_once(llm, sequences, lengths_before_step, token_timestamps, stats):
             token_timestamps.setdefault(seq.seq_id, []).append(timestamp)
             lengths_before_step[seq.seq_id] = seq.num_tokens
     stats["steps"] += 1
-    if num_tokens > 0:
+    stats["prefill_tokens"] += num_prefill
+    stats["decode_tokens"] += num_decode
+    if num_prefill > 0 and num_decode > 0:
+        # Mixed step: decode and prefill share one GPU execution; the wall
+        # time is recorded once (never split into additive phase times).
+        stats["mixed_steps"] += 1
+        stats["mixed_seconds"] += step_seconds
+    elif num_prefill > 0:
         stats["prefill_steps"] += 1
-        stats["prefill_tokens"] += num_tokens
         stats["prefill_seconds"] += step_seconds
     else:
         stats["decode_steps"] += 1
-        stats["decode_tokens"] += -num_tokens
         stats["decode_seconds"] += step_seconds
 
 
@@ -318,16 +360,23 @@ def compute_metrics(
         "steps": stats["steps"],
         "prefill_steps": stats["prefill_steps"],
         "decode_steps": stats["decode_steps"],
+        "mixed_steps": stats["mixed_steps"],
         "prefill_tokens_scheduled": stats["prefill_tokens"],
         "prefill_tokens_executed": stats["prefill_tokens"],
         "decode_query_tokens_executed": stats["decode_tokens"],
         "prefill_wall_seconds": stats["prefill_seconds"],
         "decode_wall_seconds": stats["decode_seconds"],
+        "mixed_wall_seconds": stats["mixed_seconds"],
+        # mixed-step wall time overlaps both phases; each rate below uses the
+        # union of its own pure-phase time and all mixed-step time, so the two
+        # rates are NOT additive (one mixed step is counted in both).
         "prefill_throughput_tokens_per_second": rate(
-            stats["prefill_tokens"], stats["prefill_seconds"]
+            stats["prefill_tokens"],
+            stats["prefill_seconds"] + stats["mixed_seconds"],
         ),
         "decode_throughput_tokens_per_second": rate(
-            stats["decode_tokens"], stats["decode_seconds"]
+            stats["decode_tokens"],
+            stats["decode_seconds"] + stats["mixed_seconds"],
         ),
         "output_tokens": completion_tokens,
         "output_tokens_per_second": rate(completion_tokens, elapsed),
@@ -364,6 +413,9 @@ def run_benchmark(args: argparse.Namespace) -> dict:
     from nanovllm import SamplingParams
 
     llm, environment = setup_llm(args)
+
+    if WORKLOADS[args.workload].get("staged"):
+        return run_contention_benchmark(args, llm, environment)
 
     specs = build_request_specs(args)
     if (
@@ -411,13 +463,107 @@ def run_benchmark(args: argparse.Namespace) -> dict:
         "steps": 0,
         "prefill_steps": 0,
         "decode_steps": 0,
+        "mixed_steps": 0,
         "prefill_tokens": 0,
         "decode_tokens": 0,
         "prefill_seconds": 0.0,
         "decode_seconds": 0.0,
+        "mixed_seconds": 0.0,
     }
     started = 0.0
     for spec in specs:
+        started = admit_request(
+            llm, spec, sequences, arrival_timestamps, lengths_before_step, started
+        )
+
+    while not llm.is_finished():
+        step_once(llm, sequences, lengths_before_step, token_timestamps, stats)
+    finished_at = perf_counter()
+
+    metrics = compute_metrics(
+        args,
+        llm,
+        sequences,
+        arrival_timestamps,
+        token_timestamps,
+        lengths_before_step,
+        stats,
+        started,
+        finished_at,
+        prepare_seconds,
+        cache_lookup_events,
+    )
+    return {"environment": environment, "workload": workload, "metrics": metrics}
+
+
+def run_contention_benchmark(args, llm, environment) -> dict:
+    """Two-stage contention workload run with the current scheduler.
+
+    Stage 1 requests are admitted and driven into decode; only then are the
+    Stage 2 long-prompt requests injected. This creates decode + long-prefill
+    contention without a load generator.
+    """
+    import torch
+    from nanovllm import SamplingParams
+
+    stages = build_contention_specs(args.seed)
+    if any(
+        len(spec.prompt_token_ids) + spec.max_tokens > args.max_model_len
+        for stage in stages
+        for spec in stage
+    ):
+        raise SystemExit("generated prompt plus output length exceeds --max-model-len")
+
+    workload = {
+        "name": "contention",
+        "model": os.path.abspath(args.model),
+        "stages": [
+            {
+                **stage,
+                "prompt_tokens_total": sum(
+                    len(spec.prompt_token_ids) for spec in specs
+                ),
+                "output_tokens_requested": sum(spec.max_tokens for spec in specs),
+            }
+            for stage, specs in zip(CONTENTION_STAGES, stages)
+        ],
+        "seed": args.seed,
+        "max_model_len": args.max_model_len,
+        "max_batched_tokens": args.max_batched_tokens,
+        "max_seqs": args.max_seqs,
+        "enforce_eager": args.enforce_eager,
+        "warmup_tokens": args.warmup_tokens,
+        "result_path": args.output,
+    }
+
+    prepare_seconds, cache_lookup_events = install_observers(llm)
+    sequences = []
+    arrival_timestamps = {}
+    lengths_before_step = {}
+    token_timestamps = {}
+    stats = {
+        "steps": 0,
+        "prefill_steps": 0,
+        "decode_steps": 0,
+        "mixed_steps": 0,
+        "prefill_tokens": 0,
+        "decode_tokens": 0,
+        "prefill_seconds": 0.0,
+        "decode_seconds": 0.0,
+        "mixed_seconds": 0.0,
+    }
+
+    started = 0.0
+    for spec in stages[0]:
+        started = admit_request(
+            llm, spec, sequences, arrival_timestamps, lengths_before_step, started
+        )
+
+    # Drive Stage 1 into decode (prompt fully processed) before Stage 2 arrival.
+    while not all(not seq.is_prefill for seq in sequences):
+        step_once(llm, sequences, lengths_before_step, token_timestamps, stats)
+
+    for spec in stages[1]:
         started = admit_request(
             llm, spec, sequences, arrival_timestamps, lengths_before_step, started
         )
