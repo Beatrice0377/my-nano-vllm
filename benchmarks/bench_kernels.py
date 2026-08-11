@@ -16,6 +16,8 @@ import torch
 import triton.testing
 
 from nanovllm.layers.activation import SiluAndMul, TritonSiluAndMul
+from nanovllm.layers.attention import paged_attention
+from flash_attn import flash_attn_with_kvcache
 from nanovllm.layers.layernorm import RMSNorm, TritonRMSNorm
 
 
@@ -94,10 +96,89 @@ def bench_rms():
         )
 
 
+def bench_paged_attention():
+    """Decode PagedAttention: flash_attn_with_kvcache vs Triton (BLOCK_N 32/64).
+
+    Logical (effective) KV bandwidth = requested K+V bytes / latency. This
+    counts GQA-duplicated reads, so it is NOT actual DRAM bandwidth (L2 /
+    cache reuse make DRAM traffic unknowable without a profiler).
+
+    A short GPU warmup runs first: absolute latency is sensitive to GPU
+    clock/power/runtime state across processes, so warm up before measuring
+    to make standalone runs more stable.
+    """
+    _warm = torch.randn(4096, 4096, device="cuda")
+    for _ in range(50):
+        _warm = _warm @ _warm
+    torch.cuda.synchronize()
+    del _warm
+    D, BLOCK_SIZE, H, KVH = 128, 256, 16, 8
+    SCALE = D**-0.5
+    NUM_POOL = 512
+    print(f"\nPagedAttention decode (bf16): flash-attn vs Triton")
+    print(
+        f"{'ctx':>6} {'batch':>6} {'fa2':>9} {'triton32':>9} {'triton64':>9} {'32x':>6} {'64x':>6} {'logBW GB/s':>10}"
+    )
+    for ctx in (256, 1024, 2048, 4096):
+        for batch in (1, 16, 128):
+            g = torch.Generator().manual_seed(ctx * 100 + batch)
+            q = torch.randn(batch, H, D, device="cuda", dtype=DTYPE)
+            k_cache = torch.randn(
+                NUM_POOL, BLOCK_SIZE, KVH, D, device="cuda", dtype=DTYPE
+            )
+            v_cache = torch.randn(
+                NUM_POOL, BLOCK_SIZE, KVH, D, device="cuda", dtype=DTYPE
+            )
+            ctx_lens = torch.full((batch,), ctx, dtype=torch.int32, device="cuda")
+            max_b = (ctx + BLOCK_SIZE - 1) // BLOCK_SIZE
+            ids = [
+                torch.randperm(NUM_POOL, generator=g)[:max_b].tolist()
+                for _ in range(batch)
+            ]
+            bt = torch.full((batch, max_b), -1, dtype=torch.int32, device="cuda")
+            for i, row in enumerate(ids):
+                bt[i, :max_b] = torch.tensor(row, dtype=torch.int32, device="cuda")
+
+            def fa():
+                return flash_attn_with_kvcache(
+                    q.unsqueeze(1),
+                    k_cache,
+                    v_cache,
+                    cache_seqlens=ctx_lens,
+                    block_table=bt,
+                    softmax_scale=SCALE,
+                    causal=True,
+                )
+
+            def tr(bn):
+                return paged_attention(
+                    q, k_cache, v_cache, bt, ctx_lens, H, KVH, SCALE, block_n=bn
+                )
+
+            fa()
+            tr(32)
+            tr(64)
+            torch.cuda.synchronize()
+            fa_us = triton.testing.do_bench(fa, warmup=WARMUP, rep=REP) * 1000
+            t32_us = (
+                triton.testing.do_bench(lambda: tr(32), warmup=WARMUP, rep=REP) * 1000
+            )
+            t64_us = (
+                triton.testing.do_bench(lambda: tr(64), warmup=WARMUP, rep=REP) * 1000
+            )
+            # Logical K+V bytes: per (seq, query head) program, ctx * 2 * D * 2 bytes.
+            logical_bytes = batch * H * ctx * 2 * D * 2
+            log_bw = logical_bytes / (fa_us * 1e-6) / 1e9
+            print(
+                f"{ctx:>6} {batch:>6} {fa_us:9.2f} {t32_us:9.2f} {t64_us:9.2f} {fa_us / t32_us:6.2f} {fa_us / t64_us:6.2f} {log_bw:10.1f}"
+            )
+
+
 def main():
     torch.manual_seed(0)
     bench_silu()
     bench_rms()
+    bench_paged_attention()
 
 
 if __name__ == "__main__":
