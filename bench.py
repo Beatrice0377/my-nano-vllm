@@ -39,6 +39,7 @@ WORKLOADS = {
         cold_fraction=0.25,
     ),
     "contention": dict(staged=True),
+    "prefix-affinity": dict(staged=True),
 }
 
 # Deterministic two-stage arrival pattern for scheduler contention.
@@ -47,6 +48,32 @@ WORKLOADS = {
 CONTENTION_STAGES = [
     dict(requests=16, min_input=64, max_input=128, min_output=256, max_output=512),
     dict(requests=4, min_input=1024, max_input=2048, min_output=128, max_output=256),
+]
+
+# Deterministic two-stage arrival pattern for prefix-cache affinity.
+# Stage 0: a single shared-prefix request warms the prefix cache so the
+# 512-token shared prefix (2 full blocks) is present; its TTFT/throughput is
+# NOT included in the measured result. Stage 1: measured requests alternate
+# cold / shared-hit so both schedulers see the same queue: cold prompts are
+# fully random, shared-hit prompts reuse the same 512-token prefix from the
+# warmup stage, i.e. exactly MIN_CACHED_BLOCKS (2) full cached blocks.
+PREFIX_AFFINITY_STAGES = [
+    dict(
+        requests=1,
+        shared_prefix_tokens=512,
+        min_input=768,
+        max_input=1024,
+        min_output=8,
+        max_output=8,
+    ),
+    dict(
+        requests=24,
+        shared_prefix_tokens=512,
+        min_input=768,
+        max_input=1024,
+        min_output=128,
+        max_output=256,
+    ),
 ]
 
 
@@ -113,6 +140,54 @@ def build_contention_specs(seed: int) -> list[list[RequestSpec]]:
     return stages
 
 
+def build_prefix_affinity_specs(
+    seed: int,
+) -> tuple[list[RequestSpec], list[RequestSpec]]:
+    """Generate (warmup_specs, measured_specs) sharing one fixed 512-token prefix.
+
+    Warmup: 1 shared-prefix request that fills the prefix cache. Measured:
+    cold / shared-hit alternating requests (cold at even indices, shared-hit at
+    odd indices), both drawn from the same length range so the two schedulers
+    see identical queues. The shared prefix is generated once and reused.
+    """
+    rng = Random(seed)
+    shared_prefix = [rng.randrange(10_000) for _ in range(512)]
+    warmup_specs = []
+    for _ in range(PREFIX_AFFINITY_STAGES[0]["requests"]):
+        input_len = rng.randint(
+            PREFIX_AFFINITY_STAGES[0]["min_input"],
+            PREFIX_AFFINITY_STAGES[0]["max_input"],
+        )
+        output_len = rng.randint(
+            PREFIX_AFFINITY_STAGES[0]["min_output"],
+            PREFIX_AFFINITY_STAGES[0]["max_output"],
+        )
+        suffix = [rng.randrange(10_000) for _ in range(input_len - len(shared_prefix))]
+        warmup_specs.append(RequestSpec(shared_prefix + suffix, output_len))
+    measured_specs = []
+    for i in range(PREFIX_AFFINITY_STAGES[1]["requests"]):
+        input_len = rng.randint(
+            PREFIX_AFFINITY_STAGES[1]["min_input"],
+            PREFIX_AFFINITY_STAGES[1]["max_input"],
+        )
+        output_len = rng.randint(
+            PREFIX_AFFINITY_STAGES[1]["min_output"],
+            PREFIX_AFFINITY_STAGES[1]["max_output"],
+        )
+        if i % 2 == 0:
+            measured_specs.append(
+                RequestSpec(
+                    [rng.randrange(10_000) for _ in range(input_len)], output_len
+                )
+            )
+        else:
+            suffix = [
+                rng.randrange(10_000) for _ in range(input_len - len(shared_prefix))
+            ]
+            measured_specs.append(RequestSpec(shared_prefix + suffix, output_len))
+    return warmup_specs, measured_specs
+
+
 def install_observers(llm):
     """Install benchmark-only observers without changing engine decisions."""
     prepare_seconds = {"prefill": [], "decode": []}
@@ -163,6 +238,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-seqs", type=int, default=512)
     parser.add_argument("--warmup-tokens", type=int, default=1)
     parser.add_argument("--enforce-eager", action="store_true")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -240,6 +316,7 @@ def setup_llm(args: argparse.Namespace):
         max_model_len=args.max_model_len,
         max_num_batched_tokens=args.max_batched_tokens,
         max_num_seqs=args.max_seqs,
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
     llm.generate(
         ["Benchmark warmup"],
@@ -415,6 +492,8 @@ def run_benchmark(args: argparse.Namespace) -> dict:
     llm, environment = setup_llm(args)
 
     if WORKLOADS[args.workload].get("staged"):
+        if args.workload == "prefix-affinity":
+            return run_prefix_affinity_benchmark(args, llm, environment)
         return run_contention_benchmark(args, llm, environment)
 
     specs = build_request_specs(args)
@@ -617,6 +696,115 @@ def run_contention_benchmark(args, llm, environment) -> dict:
         metrics["incumbent_decode_tpot_p99_ms"] = 0.0
         metrics["incumbent_decode_tpot_p99_9_ms"] = 0.0
         metrics["incumbent_decode_max_gap_ms"] = 0.0
+    return {"environment": environment, "workload": workload, "metrics": metrics}
+
+
+def run_prefix_affinity_benchmark(args, llm, environment) -> dict:
+    """Cold / shared-hit interleaved workload with a warm prefix cache.
+
+    Stage 0 (warmup): one shared-prefix request fills the prefix cache; its
+    latency is NOT part of the measured result. Stage 1 (measured): cold and
+    shared-hit requests alternate (cold at even indices, shared-hit at odd),
+    so the waiting queue is deterministic and identical across schedulers.
+    """
+    from nanovllm import SamplingParams
+    from nanovllm.engine.block_manager import BlockManager
+    import torch
+
+    warmup_specs, measured_specs = build_prefix_affinity_specs(args.seed)
+    if any(
+        len(spec.prompt_token_ids) + spec.max_tokens > args.max_model_len
+        for spec in warmup_specs + measured_specs
+    ):
+        raise SystemExit("generated prompt plus output length exceeds --max-model-len")
+
+    # Stage 0: warm the prefix cache; drop all per-request bookkeeping.
+    for spec in warmup_specs:
+        llm.add_request(
+            spec.prompt_token_ids,
+            SamplingParams(
+                temperature=0.6, ignore_eos=True, max_tokens=spec.max_tokens
+            ),
+        )
+    while not llm.is_finished():
+        llm.step()
+    torch.cuda.synchronize()
+
+    # Verify the warmup actually cached the shared prefix (2 full blocks).
+    shared_prefix = warmup_specs[0].prompt_token_ids[:512]
+    h = -1
+    for i in range(2):
+        h = BlockManager.compute_hash(shared_prefix[i * 256 : (i + 1) * 256], h)
+    warmup_cached = h in llm.scheduler.block_manager.hash_to_block_id
+
+    workload = {
+        "name": "prefix-affinity",
+        "model": os.path.abspath(args.model),
+        "warmup": {
+            "requests": len(warmup_specs),
+            "shared_prefix_tokens": 512,
+            "measured": False,
+        },
+        "measured": {
+            "requests": len(measured_specs),
+            "shared_prefix_tokens": 512,
+            "cold": sum(i % 2 == 0 for i in range(len(measured_specs))),
+            "shared_hit": sum(i % 2 == 1 for i in range(len(measured_specs))),
+            "alternating": True,
+        },
+        "warmup_verified_cache": warmup_cached,
+        "seed": args.seed,
+        "max_model_len": args.max_model_len,
+        "max_batched_tokens": args.max_batched_tokens,
+        "max_seqs": args.max_seqs,
+        "enforce_eager": args.enforce_eager,
+        "warmup_tokens": args.warmup_tokens,
+        "result_path": args.output,
+    }
+
+    # Stage 1: measured cold/shared-hit interleaved batch.
+    prepare_seconds, cache_lookup_events = install_observers(llm)
+    sequences = []
+    arrival_timestamps = {}
+    lengths_before_step = {}
+    token_timestamps = {}
+    stats = {
+        "steps": 0,
+        "prefill_steps": 0,
+        "decode_steps": 0,
+        "mixed_steps": 0,
+        "prefill_tokens": 0,
+        "decode_tokens": 0,
+        "prefill_seconds": 0.0,
+        "decode_seconds": 0.0,
+        "mixed_seconds": 0.0,
+    }
+
+    started = 0.0
+    for spec in measured_specs:
+        started = admit_request(
+            llm, spec, sequences, arrival_timestamps, lengths_before_step, started
+        )
+    while not llm.is_finished():
+        step_once(llm, sequences, lengths_before_step, token_timestamps, stats)
+    finished_at = perf_counter()
+
+    metrics = compute_metrics(
+        args,
+        llm,
+        sequences,
+        arrival_timestamps,
+        token_timestamps,
+        lengths_before_step,
+        stats,
+        started,
+        finished_at,
+        prepare_seconds,
+        cache_lookup_events,
+    )
+    metrics["warmup_verified_cache"] = warmup_cached
+    metrics["num_kvcache_blocks"] = llm.model_runner.config.num_kvcache_blocks
+    metrics["gpu_memory_utilization"] = llm.model_runner.config.gpu_memory_utilization
     return {"environment": environment, "workload": workload, "metrics": metrics}
 
 

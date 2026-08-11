@@ -1,0 +1,73 @@
+{
+  "environment": {
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5060 Laptop GPU",
+    "python_version": "3.11.14",
+    "torch_version": "2.7.0+cu128",
+    "triton_version": "3.3.1"
+  },
+  "metrics": {
+    "decode_query_tokens_executed": 4598,
+    "decode_steps": 254,
+    "decode_throughput_tokens_per_second": 1620.9553383193627,
+    "decode_wall_seconds": 2.836598820031213,
+    "elapsed_seconds": 3.4912176379948505,
+    "input_prepare_decode_calls": 254,
+    "input_prepare_decode_cpu_ms": 90.71929898345843,
+    "input_prepare_prefill_calls": 1,
+    "input_prepare_prefill_cpu_ms": 4.611784002918284,
+    "mixed_steps": 0,
+    "mixed_wall_seconds": 0.0,
+    "output_tokens": 4622,
+    "output_tokens_per_second": 1323.8934031779825,
+    "peak_gpu_memory_allocated_mb": 6077.93359375,
+    "prefill_steps": 1,
+    "prefill_throughput_tokens_per_second": 23747.033232512513,
+    "prefill_tokens_executed": 15453,
+    "prefill_tokens_scheduled": 15453,
+    "prefill_wall_seconds": 0.6507339189993218,
+    "prefix_cache_blocks_looked_up": 48,
+    "prefix_cache_cached_blocks": 24,
+    "prefix_cache_cached_tokens": 6144,
+    "prefix_cache_hit_rate": 0.5,
+    "prefix_cache_looked_up_tokens": 12288,
+    "prefix_cache_lookup_events": 24,
+    "request_latency_p50_ms": 3004.159197498666,
+    "request_latency_p95_ms": 3462.8780829491,
+    "request_throughput_per_second": 6.874392400751098,
+    "steps": 255,
+    "timestamped_output_tokens": 4622,
+    "total_tokens_per_second": 7509.987264803877,
+    "tpot_p50_ms": 12.65252599841915,
+    "tpot_p95_ms": 13.451877006446011,
+    "tpot_sample_count": 4598,
+    "ttft_p50_ms": 650.7975704989803,
+    "ttft_p95_ms": 650.8828463975078,
+    "warmup_verified_cache": true
+  },
+  "workload": {
+    "enforce_eager": false,
+    "max_batched_tokens": 16384,
+    "max_model_len": 4096,
+    "max_seqs": 512,
+    "measured": {
+      "alternating": true,
+      "cold": 12,
+      "requests": 24,
+      "shared_hit": 12,
+      "shared_prefix_tokens": 512
+    },
+    "model": "/home/beatrice/huggingface/Qwen3-0.6B-local",
+    "name": "prefix-affinity",
+    "result_path": "/home/beatrice/my-nanovllm/nano-vllm/benchmarks/results/phase6-fifo-prefix-affinity.json",
+    "seed": 0,
+    "warmup": {
+      "measured": false,
+      "requests": 1,
+      "shared_prefix_tokens": 512
+    },
+    "warmup_tokens": 1,
+    "warmup_verified_cache": true
+  }
+}

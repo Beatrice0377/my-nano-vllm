@@ -1,0 +1,195 @@
+{
+ "all_requests": 24,
+ "arrangement": "coldfirst",
+ "budget": 16384,
+ "cold_request_count": 10,
+ "elapsed": 28.564,
+ "measured_request_count": 24,
+ "mode": "fifo",
+ "num_kvcache_blocks": 29,
+ "peak_mem_mb": 2150.3,
+ "per_request": [
+  {
+   "first_cached_blocks": 0,
+   "first_prefill_tokens": 868,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 868,
+   "seq_id": 15,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 0,
+   "first_prefill_tokens": 375,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 375,
+   "seq_id": 16,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 307,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 307,
+   "seq_id": 17,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 368,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 368,
+   "seq_id": 18,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 330,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 330,
+   "seq_id": 19,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 371,
+   "preempt_count": 1,
+   "preempted": true,
+   "prefill_steps": 2,
+   "prefill_tokens_executed": 854,
+   "seq_id": 20,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 256,
+   "preempt_count": 1,
+   "preempted": true,
+   "prefill_steps": 2,
+   "prefill_tokens_executed": 583,
+   "seq_id": 21,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 375,
+   "preempt_count": 1,
+   "preempted": true,
+   "prefill_steps": 2,
+   "prefill_tokens_executed": 751,
+   "seq_id": 22,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 287,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 287,
+   "seq_id": 23,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 484,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 484,
+   "seq_id": 24,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 272,
+   "preempt_count": 1,
+   "preempted": true,
+   "prefill_steps": 2,
+   "prefill_tokens_executed": 569,
+   "seq_id": 25,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 407,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 407,
+   "seq_id": 26,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 273,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 273,
+   "seq_id": 27,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  },
+  {
+   "first_cached_blocks": 2,
+   "first_prefill_tokens": 263,
+   "preempt_count": 0,
+   "preempted": false,
+   "prefill_steps": 1,
+   "prefill_tokens_executed": 263,
+   "seq_id": 28,
+   "warm_block0_reused": false,
+   "warm_block1_reused": false
+  }
+ ],
+ "possible_warm_block_reuse_events": 28,
+ "preempt_count_all": {
+  "11": 1,
+  "20": 1,
+  "21": 1,
+  "22": 1,
+  "25": 1
+ },
+ "preempted_seqs_all": [
+  11,
+  20,
+  21,
+  22,
+  25
+ ],
+ "shared_hit_request_count": 14,
+ "shared_hits_executed_tokens_total": 6719,
+ "shared_hits_preempted": 4,
+ "shared_hits_reprefill_work": 1483,
+ "shared_requests_with_any_warm_reuse": 0,
+ "shared_requests_with_full_2block_reuse": 0,
+ "total_prefill_tokens_executed": 16379,
+ "util": 0.45,
+ "warm_block_ids": [
+  0,
+  1
+ ],
+ "warm_block_reuse_event_count": 0
+}
