@@ -244,20 +244,25 @@ class ModelRunner:
 
     def prepare_prefill(self, seqs: list[Sequence]):
         data = self._prefill_data(seqs)
-        logits_indices = [
-            data["cu_seqlens_q"][i + 1] - 1
-            for i, seq in enumerate(seqs)
-            if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens
-        ]
+        cu = data["cu_seqlens_q"]
+        completed = torch.tensor(
+            [
+                seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens
+                for seq in seqs
+            ],
+            dtype=torch.bool,
+            pin_memory=True,
+        ).cuda(non_blocking=True)
+        logits_indices = (cu[1:] - 1)[completed]
         set_context(
             num_decode_tokens=0,
-            cu_seqlens_q=data["cu_seqlens_q"],
+            cu_seqlens_q=cu,
             cu_seqlens_k=data["cu_seqlens_k"],
             max_seqlen_q=data["max_seqlen_q"],
             max_seqlen_k=data["max_seqlen_k"],
             slot_mapping=data["slot_mapping"],
             block_tables=data["block_tables"],
-            logits_indices=torch.tensor(logits_indices, dtype=torch.int64),
+            logits_indices=logits_indices,
         )
         return data["input_ids"], data["positions"]
 
@@ -275,13 +280,20 @@ class ModelRunner:
         nd = len(decode_seqs)
         d = self._decode_data(decode_seqs)
         p = self._prefill_data(prefill_seqs)
-        logits_indices = list(range(nd))
-        for i, seq in enumerate(prefill_seqs):
-            if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
-                logits_indices.append(nd + p["cu_seqlens_q"][i + 1] - 1)
+        cu = p["cu_seqlens_q"]
+        completed = torch.tensor(
+            [
+                seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens
+                for seq in prefill_seqs
+            ],
+            dtype=torch.bool,
+            pin_memory=True,
+        ).cuda(non_blocking=True)
+        prefill_indices = (cu[1:] - 1)[completed] + nd
+        logits_indices = torch.cat([torch.arange(nd, device="cuda"), prefill_indices])
         set_context(
             num_decode_tokens=nd,
-            cu_seqlens_q=p["cu_seqlens_q"],
+            cu_seqlens_q=cu,
             cu_seqlens_k=p["cu_seqlens_k"],
             max_seqlen_q=p["max_seqlen_q"],
             max_seqlen_k=p["max_seqlen_k"],
@@ -289,7 +301,7 @@ class ModelRunner:
             context_lens=d["context_lens"],
             block_tables=d["block_tables"],
             prefill_block_tables=p["block_tables"],
-            logits_indices=torch.tensor(logits_indices, dtype=torch.int64),
+            logits_indices=logits_indices,
         )
         return torch.cat([d["input_ids"], p["input_ids"]]), torch.cat(
             [d["positions"], p["positions"]]
@@ -343,16 +355,11 @@ class ModelRunner:
         reset_context()
         if sampled is None:
             return None
-        nd = len(decode_seqs)
-        token_ids = list(sampled[:nd])
-        completed = output.completed_prefill_seqs
-        for seq in prefill_seqs:
-            if seq in completed:
-                token_ids.append(sampled[nd + completed.index(seq)])
-            else:
-                token_ids.append(
-                    seq.last_token
-                )  # unused: postprocess skips incomplete chunks
+        # sampled order == sample_seqs order == decode_seqs + completed_prefill_seqs.
+        # Incomplete prefill chunks produce no token: they have no logits row and
+        # are not consumed by postprocess (which skips them below).
+        token_ids = list(sampled)
+        assert len(token_ids) == len(decode_seqs) + len(output.completed_prefill_seqs)
         return token_ids
 
     @torch.inference_mode()

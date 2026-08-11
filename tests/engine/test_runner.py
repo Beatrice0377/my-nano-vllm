@@ -19,17 +19,9 @@ def make_output(n_decode, prefill_specs):
 
 
 def map_tokens(sampled, output):
-    """Mirror of ModelRunner.run()'s token mapping: decode tokens first, then
-    completed-prefill tokens; incomplete chunks get a placeholder."""
-    nd = len(output.decode_seqs)
-    completed = output.completed_prefill_seqs
-    token_ids = list(sampled[:nd])
-    for seq in output.prefill_seqs:
-        if seq in completed:
-            token_ids.append(sampled[nd + completed.index(seq)])
-        else:
-            token_ids.append(seq.last_token)
-    return token_ids
+    """Mirror of ModelRunner.run()'s token mapping: sampled order ==
+    decode_seqs + completed_prefill_seqs; incomplete chunks produce no token."""
+    return list(sampled)
 
 
 class TestCompletedPrefillSeqs:
@@ -61,13 +53,13 @@ class TestTokenMapping:
         out = make_output(0, [(0, 30, 30), (0, 50, 50)])
         assert map_tokens([111, 222], out) == [111, 222]
 
-    def test_mixed_with_chunked_placeholder(self):
+    def test_mixed_with_chunked(self):
         out = make_output(1, [(0, 30, 30), (80, 15, 100)])
-        # sampled = [decode, completed_prefill]; incomplete chunk -> its last_token
-        assert map_tokens([11, 22], out) == [11, 22, out.prefill_seqs[1].last_token]
+        # sampled = [decode, completed_prefill]; incomplete chunk produces no token
+        assert map_tokens([11, 22], out) == [11, 22]
 
     def test_chunked_first_token_slot(self):
         # 2 decode + 1 complete prefill + 1 chunked; verify positional alignment
         out = make_output(2, [(0, 30, 30), (80, 15, 100)])
         sampled = [1, 2, 3]
-        assert map_tokens(sampled, out) == [1, 2, 3, out.prefill_seqs[1].last_token]
+        assert map_tokens(sampled, out) == [1, 2, 3]

@@ -26,7 +26,7 @@ def drain_prefill(scheduler):
         out = scheduler.schedule()
         if not out.prefill_seqs:
             return out
-        scheduler.postprocess(out.prefill_seqs, [0] * len(out.prefill_seqs))
+        scheduler.postprocess(out.prefill_seqs, [0] * len(out.completed_prefill_seqs))
 
 
 def test_pure_decode_preserves_running_order_and_membership():
@@ -107,14 +107,14 @@ def test_chunked_prefill_stays_in_waiting():
     assert seq in scheduler.waiting
     assert seq.block_table  # allocated
 
-    scheduler.postprocess(out.prefill_seqs, [0])
+    scheduler.postprocess(out.prefill_seqs, [])
     assert seq.num_cached_tokens == 4
     assert seq.status == SequenceStatus.WAITING
     assert seq in scheduler.waiting
 
     out2 = scheduler.schedule()  # second chunk: 4 more
     assert seq.num_scheduled_tokens == 4
-    scheduler.postprocess(out2.prefill_seqs, [0])
+    scheduler.postprocess(out2.prefill_seqs, [])
     assert seq.num_cached_tokens == 8
     assert seq.status == SequenceStatus.WAITING
 
