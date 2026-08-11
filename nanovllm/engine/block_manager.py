@@ -31,6 +31,7 @@ class BlockManager:
         self.hash_to_block_id: dict[int, int] = dict()
         self.free_block_ids: deque[int] = deque(range(num_blocks))
         self.used_block_ids: set[int] = set()
+        self.cache_lookup_observer = None
 
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
@@ -59,7 +60,11 @@ class BlockManager:
         h = -1
         num_cached_blocks = 0
         num_new_blocks = seq.num_blocks
+        observer = self.cache_lookup_observer
+        num_looked_up_blocks = 0
         for i in range(seq.num_blocks - 1):
+            if observer is not None:
+                num_looked_up_blocks += 1
             token_ids = seq.block(i)
             h = self.compute_hash(token_ids, h)
             block_id = self.hash_to_block_id.get(h, -1)
@@ -68,6 +73,8 @@ class BlockManager:
             num_cached_blocks += 1
             if block_id in self.used_block_ids:
                 num_new_blocks -= 1
+        if observer is not None:
+            observer(seq, num_cached_blocks, num_looked_up_blocks)
         if len(self.free_block_ids) < num_new_blocks:
             return -1
         return num_cached_blocks

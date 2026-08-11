@@ -9,13 +9,16 @@ authors = [{ name = "Xingkai Yu" }]
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
-description = "a lightweight vLLM implementation built from scratch"
+description = "a lightweight research inference engine derived from nano-vLLM"
 requires-python = ">=3.10,<3.13"
 dependencies = [
+    "numpy>=1.26.0",
     "torch>=2.4.0",
     "triton>=3.0.0",
     "transformers>=4.51.0",
     "flash-attn",
+    "safetensors>=0.4.3",
+    "tqdm>=4.66.0",
     "xxhash",
 ]
 
