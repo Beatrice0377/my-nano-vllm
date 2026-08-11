@@ -19,16 +19,22 @@ of measurable GPU-kernel and serving-system improvements. It is an educational
 and research codebase, not a production serving framework. The current model
 path is the Qwen3 path already supported by the baseline.
 
-The current checked-in implementation is still the imported baseline. In
-particular, the planned Triton kernels and mixed scheduling are not implemented
-yet and must not be inferred from the roadmap below.
+Status of the roadmap below: Triton fused kernels (items 1-2) and the unified
+mixed scheduler (item 3) are implemented and tested. Item 4 (prefix-cache
+affinity) is the current next step. See `docs/` for per-phase reports including
+measured results and their limits.
 
 ## Roadmap
 
-1. Triton fused add + RMSNorm, and SiLU × gate.
-2. Triton PagedAttention decode and FlashAttention prefill integration.
-3. Unified mixed scheduling: decode-first, a shared token budget, chunked
-   prefill, and decode/prefill requests in one model batch.
+1. [done] Triton fused add + RMSNorm, and SiLU × gate (add+RMSNorm is wired for
+   large prefill rows; SiLU × gate and plain RMSNorm keep the baseline torch
+   path — see `tests/kernels/` and `benchmarks/bench_kernels.py`).
+2. [done] Triton PagedAttention decode and FlashAttention prefill (standalone
+   kernels with correctness and latency benchmarks, not yet wired into the
+   engine — see `docs/phase3-paged-attention.md`, `docs/phase4-flash-attention.md`).
+3. [done] Unified mixed scheduling: decode-first, a shared token budget, chunked
+   prefill, and decode/prefill requests in one model batch (see
+   `docs/phase5-mixed-scheduling.md`).
 4. Prefix-cache-affinity scheduling with a bounded candidate window and aging.
 5. Persistent decode metadata to reduce repeated Python/CPU-tensor/H2D setup.
 6. Correctness and performance ablations covering kernel latency, TTFT, TPOT,

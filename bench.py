@@ -563,6 +563,12 @@ def run_contention_benchmark(args, llm, environment) -> dict:
     while not all(not seq.is_prefill for seq in sequences):
         step_once(llm, sequences, lengths_before_step, token_timestamps, stats)
 
+    # Incumbent requests: Stage 1 sequences already decoding when the Stage 2
+    # long-prefill burst is injected. Record the injection wall time so we can
+    # isolate their post-injection inter-token latencies (rare stall gaps that
+    # P95 TPOT dilutes away across the full sample pool).
+    incumbent_seq_ids = [seq.seq_id for seq in sequences]
+    stage2_injected_at = perf_counter()
     for spec in stages[1]:
         started = admit_request(
             llm, spec, sequences, arrival_timestamps, lengths_before_step, started
@@ -585,6 +591,32 @@ def run_contention_benchmark(args, llm, environment) -> dict:
         prepare_seconds,
         cache_lookup_events,
     )
+    # Stall-sensitive metrics on incumbent decodes: gaps that end at/after
+    # stage-2 injection (a prefill stall spans the injection boundary, so the
+    # gap's earlier timestamp is typically before injection). P99.9 + max
+    # capture the extreme inter-token stall from the injected prefill burst.
+    incumbent_gaps = []
+    for seq_id in incumbent_seq_ids:
+        timestamps = token_timestamps.get(seq_id, [])
+        incumbent_gaps.extend(
+            later - earlier
+            for earlier, later in zip(timestamps, timestamps[1:])
+            if later >= stage2_injected_at
+        )
+    if incumbent_gaps:
+        metrics["incumbent_decode_gap_count"] = len(incumbent_gaps)
+        metrics["incumbent_decode_tpot_p99_ms"] = (
+            percentile(incumbent_gaps, 0.99) * 1000
+        )
+        metrics["incumbent_decode_tpot_p99_9_ms"] = (
+            percentile(incumbent_gaps, 0.999) * 1000
+        )
+        metrics["incumbent_decode_max_gap_ms"] = max(incumbent_gaps) * 1000
+    else:
+        metrics["incumbent_decode_gap_count"] = 0
+        metrics["incumbent_decode_tpot_p99_ms"] = 0.0
+        metrics["incumbent_decode_tpot_p99_9_ms"] = 0.0
+        metrics["incumbent_decode_max_gap_ms"] = 0.0
     return {"environment": environment, "workload": workload, "metrics": metrics}
 
 
