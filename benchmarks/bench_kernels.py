@@ -14,12 +14,11 @@ JIT) is triggered once per shape outside the timed region.
 
 import torch
 import triton.testing
+from flash_attn import flash_attn_with_kvcache
 
 from nanovllm.layers.activation import SiluAndMul, TritonSiluAndMul
 from nanovllm.layers.attention import paged_attention
-from flash_attn import flash_attn_with_kvcache
 from nanovllm.layers.layernorm import RMSNorm, TritonRMSNorm
-
 
 # Qwen3-0.6B MLP intermediate size -> input width 2 * H.
 SILU_SHAPES = [
@@ -174,11 +173,87 @@ def bench_paged_attention():
             )
 
 
+def bench_flash_attention():
+    """Triton FlashAttention (Phase 4 v1) vs flash_attn_varlen_func.
+
+    Rows: single-seq L, varlen batch, and a ragged batch [64,128,...,4096]
+    that exposes the T_max grid waste (early-exit programs). Timing is
+    triton.testing.do_bench, mean microseconds. The TFLOP/s column is
+    logical causal-attention FLOPs only (2 * D * H * sum L*(L+1)), not
+    hardware utilization.
+    """
+    from flash_attn import flash_attn_varlen_func
+
+    from nanovllm.layers.attention import flash_attention
+
+    D, H, KVH, SCALE = 128, 16, 8, 128**-0.5
+    lengths_cases = [
+        ("L=128", [128]),
+        ("L=256", [256]),
+        ("L=512", [512]),
+        ("L=1024", [1024]),
+        ("L=2048", [2048]),
+        ("L=4096", [4096]),
+        ("varlen", [64, 128, 512, 1024, 2048, 4096]),
+        ("ragged", [64, 128, 256, 512, 1024, 4096]),
+    ]
+    print(
+        f"{'case':>8} {'tokens':>7} {'FA2':>10} {'C1 64x64':>10} {'C2 32x64':>10} {'C1/FA2':>7} {'C2/FA2':>7} {'TF/s':>8}"
+    )
+    for label, lengths in lengths_cases:
+        L = sum(lengths)
+        q = torch.randn(L, H, D, device="cuda", dtype=DTYPE)
+        k = torch.randn(L, KVH, D, device="cuda", dtype=DTYPE)
+        v = torch.randn(L, KVH, D, device="cuda", dtype=DTYPE)
+        cu = torch.tensor([0] + lengths, dtype=torch.int32, device="cuda")
+        cu = torch.cumsum(cu, dim=0).to(torch.int32)
+
+        def fa():
+            max_seqlen = max(lengths)
+            return flash_attn_varlen_func(
+                q,
+                k,
+                v,
+                cu_seqlens_q=cu,
+                cu_seqlens_k=cu,
+                max_seqlen_q=max_seqlen,
+                max_seqlen_k=max_seqlen,
+                softmax_scale=SCALE,
+                causal=True,
+            )
+
+        def c1():
+            return flash_attention(
+                q, k, v, cu, SCALE, H, KVH, block_m=64, max_seqlen=max(lengths)
+            )
+
+        def c2():
+            return flash_attention(
+                q, k, v, cu, SCALE, H, KVH, block_m=32, max_seqlen=max(lengths)
+            )
+
+        fa()
+        c1()
+        c2()
+        torch.cuda.synchronize()
+        fa_us = triton.testing.do_bench(fa, warmup=WARMUP, rep=REP) * 1000
+        c1_us = triton.testing.do_bench(c1, warmup=WARMUP, rep=REP) * 1000
+        c2_us = triton.testing.do_bench(c2, warmup=WARMUP, rep=REP) * 1000
+        # Logical causal-attention FLOPs: 2 * D * H * sum L_s * (L_s + 1).
+        flops = 2 * D * H * sum(ls * (ls + 1) for ls in lengths)
+        tf = flops / (fa_us * 1e-6) / 1e12
+        print(
+            f"{label:>8} {L:>7} {fa_us:10.2f} {c1_us:10.2f} {c2_us:10.2f} "
+            f"{fa_us / c1_us:7.2f} {fa_us / c2_us:7.2f} {tf:8.2f}"
+        )
+
+
 def main():
     torch.manual_seed(0)
     bench_silu()
     bench_rms()
     bench_paged_attention()
+    bench_flash_attention()
 
 
 if __name__ == "__main__":
