@@ -6,7 +6,6 @@ from nanovllm.engine.sequence import Sequence
 
 
 class Block:
-
     def __init__(self, block_id):
         self.block_id = block_id
         self.ref_count = 0
@@ -24,7 +23,6 @@ class Block:
 
 
 class BlockManager:
-
     def __init__(self, num_blocks: int, block_size: int):
         self.block_size = block_size
         self.blocks: list[Block] = [Block(i) for i in range(num_blocks)]
@@ -55,6 +53,30 @@ class BlockManager:
         assert self.blocks[block_id].ref_count == 0
         self.used_block_ids.remove(block_id)
         self.free_block_ids.append(block_id)
+
+    def probe_allocate(self, seq: Sequence) -> tuple[int, int]:
+        """Read-only allocation probe for scheduler cache-affinity ranking.
+
+        Runs the same prefix-matching loop as can_allocate() but returns
+        (num_cached_blocks, num_required_free_blocks) and touches nothing:
+        no cache_lookup_observer call, no hash/ref_count/free/used mutation.
+        Feasibility for the caller is ``required_free_blocks <=
+        len(free_block_ids)``; the actual allocation still goes through
+        can_allocate()/allocate() so Phase 1 observer semantics stay intact.
+        """
+        h = -1
+        num_cached_blocks = 0
+        num_new_blocks = seq.num_blocks
+        for i in range(seq.num_blocks - 1):
+            token_ids = seq.block(i)
+            h = self.compute_hash(token_ids, h)
+            block_id = self.hash_to_block_id.get(h, -1)
+            if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
+                break
+            num_cached_blocks += 1
+            if block_id in self.used_block_ids:
+                num_new_blocks -= 1
+        return num_cached_blocks, num_new_blocks
 
     def can_allocate(self, seq: Sequence) -> int:
         h = -1
@@ -117,7 +139,8 @@ class BlockManager:
     def hash_blocks(self, seq: Sequence):
         start = seq.num_cached_tokens // self.block_size
         end = (seq.num_cached_tokens + seq.num_scheduled_tokens) // self.block_size
-        if start == end: return
+        if start == end:
+            return
         h = self.blocks[seq.block_table[start - 1]].hash if start > 0 else -1
         for i in range(start, end):
             block = self.blocks[seq.block_table[i]]
