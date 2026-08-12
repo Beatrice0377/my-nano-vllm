@@ -16,18 +16,18 @@ complexity.
 
 ## Results
 
-| Change | Baseline | my-nano-vLLM | Measured effect |
-|---|---:|---:|---:|
-| Mixed scheduling, 1024-token shared budget | ~435 ms max incumbent decode gap | ~58 ms | ~87% lower worst observed decode stall |
-| Prefix affinity, 29-block KV-pressure workload | 16,379 executed prefill tokens | 14,319 | 12.6% less prefill work |
-| Fused Add+RMSNorm, large prefill rows | compiled PyTorch path | Triton fused kernel | ~1.3× kernel-level speedup (measured large-prefill shapes, RTX 5060 Laptop GPU) |
+| Improvement | Measured scenario | Baseline → Ours | Result |
+|---|---|---|---|
+| Mixed scheduling | Max incumbent decode gap, 1024-token shared budget | ~435 ms → ~58 ms | **~87% lower** |
+| Prefix affinity | Executed prefill tokens, 29-block KV pressure | 16,379 → 14,319 | **12.6% less work** |
+| Fused Add+RMSNorm | Large-prefill kernel benchmark | compiled PyTorch → Triton | **~1.3× faster** |
 
 These are workload-specific measurements, not universal speedups. Mixed
 scheduling mainly reduces rare decode stalls under token-budget contention;
-prefix affinity becomes useful only when KV allocation pressure can recycle
-otherwise reusable cached blocks. The Add+RMSNorm result is kernel-level
-(measured large-prefill shapes on the tested RTX 5060 Laptop GPU), not an
-end-to-end engine speedup. Details and limits are in `docs/`.
+prefix affinity reduces recomputation only when KV allocation pressure is high
+enough to recycle reusable cached blocks; the Add+RMSNorm result is
+kernel-level (measured large-prefill shapes on the tested RTX 5060 Laptop GPU),
+not an end-to-end engine speedup. Details and limits are in `docs/`.
 
 ## What changed
 
@@ -52,15 +52,6 @@ end-to-end engine speedup. Details and limits are in `docs/`.
 - Executed vs scheduled prefill work.
 - Contention and KV-cache-pressure workloads.
 - Focused decode metadata profiling.
-
-## Evaluated but not integrated
-
-| Change | Status | Why not integrated |
-|---|---|---|
-| Triton SiLU × Gate | Standalone | No consistent advantage over the compiled baseline. |
-| Triton PagedAttention decode | Standalone | Correct, but slower than FlashAttention on the tested RTX 5060 Laptop GPU for most measured batch sizes. |
-| Triton prefill FlashAttention | Standalone | Near parity for short sequences, slower than FlashAttention 2 as sequence length grows on the tested GPU. |
-| Persistent decode metadata | Not integrated | Profiling and write-path prototypes projected <1% gain for the representative decode-heavy workload. |
 
 ## Architecture
 
@@ -110,17 +101,30 @@ python3 bench.py --workload decode-heavy --model /path/to/Qwen3-0.6B
 python3 bench.py --workload prefix-sharing --model /path/to/Qwen3-0.6B
 ```
 
+## Evaluated experiments
+
+| Experiment | Status | Finding |
+|---|---|---|
+| SiLU × Gate | Standalone | No consistent win over compiled PyTorch |
+| PagedAttention decode | Standalone | Slower than FlashAttention 2 for most measured batches |
+| Prefill FlashAttention | Standalone | Short-sequence parity; slower at longer lengths |
+| Persistent decode metadata | Not integrated | <1% projected gain on representative decode-heavy workload |
+
+Kernel comparisons above refer to the tested RTX 5060 Laptop GPU and measured
+configurations; full measurements and methodology are documented under `docs/`.
+
 ## Documentation
 
-| Topic | Doc |
+| Topic | Reference |
 |---|---|
-| Baseline / benchmark methodology | [`docs/phase1-benchmark.md`](docs/phase1-benchmark.md) |
-| Triton fused kernels | [`docs/phase0-baseline.md`](docs/phase0-baseline.md) |
+| Baseline architecture | [`docs/phase0-baseline.md`](docs/phase0-baseline.md) |
+| Benchmark methodology | [`docs/phase1-benchmark.md`](docs/phase1-benchmark.md) |
+| Kernel benchmarks | [`benchmarks/bench_kernels.py`](benchmarks/bench_kernels.py) |
 | PagedAttention | [`docs/phase3-paged-attention.md`](docs/phase3-paged-attention.md) |
 | Prefill FlashAttention | [`docs/phase4-flash-attention.md`](docs/phase4-flash-attention.md) |
 | Mixed scheduling | [`docs/phase5-mixed-scheduling.md`](docs/phase5-mixed-scheduling.md) |
 | Prefix-cache affinity | [`docs/phase6-prefix-affinity.md`](docs/phase6-prefix-affinity.md) |
-| Persistent decode metadata profiling | [`docs/phase7-persistent-decode-metadata.md`](docs/phase7-persistent-decode-metadata.md) |
+| Persistent metadata profiling | [`docs/phase7-persistent-decode-metadata.md`](docs/phase7-persistent-decode-metadata.md) |
 | Environment | [`docs/environment.md`](docs/environment.md) |
 
 ## Scope
