@@ -20,7 +20,7 @@ complexity.
 |---|---|---|---|
 | Mixed scheduling | Max incumbent decode gap, 1024-token shared budget | ~435 ms → ~58 ms | **~87% lower** |
 | Prefix affinity | Executed prefill tokens, 29-block KV pressure | 15,957 → 15,427 | **3.3% less work** |
-| Fused Add+RMSNorm | Standalone large-prefill microbenchmark | compiled PyTorch → Triton | **~1.3× faster** |
+| Fused Add+RMSNorm | Standalone large-prefill microbenchmark | compiled PyTorch → Triton | **~1.2× faster** |
 
 These are workload-specific measurements, not universal speedups. Mixed
 scheduling mainly reduces rare decode stalls under token-budget contention;

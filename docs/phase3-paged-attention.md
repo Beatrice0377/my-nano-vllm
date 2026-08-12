@@ -111,26 +111,26 @@ w25/r100, µs, RTX 5060 Laptop GPU, short warmup first). Ratio = FA2 / Triton;
 
 | ctx | batch | FA2 | triton64 | FA2 / Triton |
 |---|---|---|---|---|
-| 256 | 1 | 19.4 | 20.5 | 0.94 |
-| 256 | 16 | 64.9 | 71.2 | 0.91 |
-| 256 | 128 | 374.8 | 483.7 | 0.77 |
-| 1024 | 1 | 32.3 | 46.8 | 0.69 |
-| 1024 | 16 | 199.3 | 245.0 | 0.81 |
-| 1024 | 128 | 1237.8 | 1929.8 | 0.64 |
-| 2048 | 1 | 42.6 | 78.5 | 0.54 |
-| 2048 | 16 | 384.1 | 497.9 | 0.77 |
-| 2048 | 128 | 2346.4 | 3554.6 | 0.66 |
-| 4096 | 1 | 68.6 | 137.4 | 0.50 |
-| 4096 | 16 | 681.0 | 890.0 | 0.77 |
-| 4096 | 128 | 4662.1 | 6785.6 | 0.69 |
+| 256 | 1 | 19.4 | 21.3 | 0.91 |
+| 256 | 16 | 63.7 | 71.6 | 0.89 |
+| 256 | 128 | 374.3 | 481.1 | 0.78 |
+| 1024 | 1 | 33.4 | 49.5 | 0.67 |
+| 1024 | 16 | 197.9 | 253.3 | 0.78 |
+| 1024 | 128 | 1236.4 | 1920.5 | 0.64 |
+| 2048 | 1 | 44.0 | 77.0 | 0.57 |
+| 2048 | 16 | 383.4 | 498.8 | 0.77 |
+| 2048 | 128 | 2362.6 | 3548.6 | 0.67 |
+| 4096 | 1 | 67.8 | 136.9 | 0.50 |
+| 4096 | 16 | 678.7 | 886.2 | 0.77 |
+| 4096 | 128 | 4653.4 | 6749.0 | 0.69 |
 
 Ratios are `FA2_us / Triton_us`, computed by script from the committed raw
-artifact `benchmarks/results/kernels-benchmark-raw-10db113.txt` (single
-re-run of `benchmarks/bench_kernels.py` in the clean commit-1 worktree;
+artifact `benchmarks/results/kernels-benchmark-raw-020e3cc.txt` (single
+re-run of `benchmarks/bench_kernels.py` in the clean commit worktree;
 earlier versions of this document transcribed stale latency values).
-Min/max ratio across the table: 0.50–0.94x, no measured configuration was
+Min/max ratio across the table: 0.50–0.91x, no measured configuration was
 faster than FA2. BLOCK_N=64 beats
-BLOCK_N=32 everywhere. Logical KV bandwidth at batch=128: FA2 727–924 GB/s
+BLOCK_N=32 everywhere. Logical KV bandwidth at batch=128: FA2 717–923 GB/s
 (computed as `batch*H*ctx*2*D*2 bytes / FA2 latency`; logical, not DRAM
 traffic).
 

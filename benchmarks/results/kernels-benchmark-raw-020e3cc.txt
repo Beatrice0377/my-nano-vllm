@@ -1,0 +1,65 @@
+git_commit: 020e3cc65aad27cf3bb077d8531bbb98c97fa6f1
+git_dirty: false
+command: python benchmarks/bench_kernels.py
+GPU: NVIDIA GeForce RTX 5060 Laptop GPU
+Python: 3.11.14
+PyTorch: 2.7.0+cu128 (CUDA 12.8)
+Triton: 3.3.1
+Transformers: 4.51.3
+FlashAttention: 2.7.4.post1
+
+SiluAndMul (torch.compile) vs Triton, dtype=torch.bfloat16
+      silu       (1, 6144)         6.45         6.50      0.99x
+      silu      (16, 6144)         7.81         7.77      1.00x
+      silu     (128, 6144)        13.50        12.84      1.05x
+      silu    (1024, 6144)        60.28        65.79      0.92x
+      silu    (4096, 6144)       234.99       239.46      0.98x
+
+RMSNorm (torch.compile) vs Triton, input_dtype=torch.bfloat16 weight_dtype=torch.bfloat16
+       rms       (1, 1024)         7.02         7.30      0.96x
+       rms      (16, 1024)         6.93         7.25      0.96x
+       rms      (32, 1024)         8.84         7.38      1.20x
+       rms     (128, 1024)         7.94         7.99      0.99x
+       rms     (512, 1024)        12.43        11.22      1.11x
+       rms    (1024, 1024)        16.46        15.39      1.07x
+       rms    (4096, 1024)        52.56        50.41      1.04x
+
+Add+RMSNorm (torch.compile) vs Triton, input_dtype=torch.bfloat16 weight_dtype=torch.bfloat16
+   add_rms       (1, 1024)         6.88         7.19      0.96x
+   add_rms      (16, 1024)         6.89         7.16      0.96x
+   add_rms      (32, 1024)         7.72         7.80      0.99x
+   add_rms     (128, 1024)         8.26         8.31      0.99x
+   add_rms     (512, 1024)        18.93        16.39      1.16x
+   add_rms    (1024, 1024)        39.23        31.16      1.26x
+   add_rms    (4096, 1024)       132.88       103.69      1.28x
+
+QK-norm [M,16,128] (torch.compile) vs Triton, input_dtype=torch.bfloat16 weight_dtype=torch.bfloat16
+        qk    (1, 16, 128)         6.41         6.48      0.99x
+        qk   (16, 16, 128)         7.72         7.29      1.06x
+        qk  (128, 16, 128)        10.12        10.15      1.00x
+
+PagedAttention decode (bf16): flash-attn vs Triton
+   ctx  batch       fa2  triton32  triton64 FA2/T32 FA2/T64 logBW GB/s
+  relative = FA2_us / Triton_us; >1 means Triton is faster, <1 slower
+   256      1     19.39     28.70     21.32   0.68   0.91      108.2
+   256     16     63.68    116.60     71.61   0.55   0.89      527.0
+   256    128    374.31    680.83    481.07   0.55   0.78      717.1
+  1024      1     33.42     79.85     49.53   0.42   0.67      251.0
+  1024     16    197.86    371.79    253.28   0.53   0.78      678.4
+  1024    128   1236.35   2520.94   1920.48   0.49   0.64      868.5
+  2048      1     44.01    134.34     76.98   0.33   0.57      381.2
+  2048     16    383.37    689.61    498.83   0.56   0.77      700.2
+  2048    128   2362.58   4924.12   3548.58   0.48   0.67      909.0
+  4096      1     67.83    255.49    136.90   0.27   0.50      494.7
+  4096     16    678.66   1310.37    886.24   0.52   0.77      791.1
+  4096    128   4653.38   9721.05   6749.04   0.48   0.69      923.0
+    case  tokens        FA2   C1 64x64   C2 32x64  FA2/C1  FA2/C2  FA2 TF/s
+  relative = FA2_us / custom_us; >1 means custom Triton is faster, <1 slower
+   L=128     128      17.97      20.01      19.76    0.90    0.91     3.76
+   L=256     256      35.06      35.24      36.68    0.99    0.96     7.69
+   L=512     512      78.84      85.07      90.90    0.93    0.87    13.65
+  L=1024    1024     201.48     259.32     274.80    0.78    0.73    21.34
+  L=2048    2048     642.90     896.83     959.28    0.72    0.67    26.74
+  L=4096    4096    2286.63    3389.62    3592.57    0.67    0.64    30.06
+  varlen    7872    3083.57    4553.02    4928.55    0.68    0.63    29.64
+  ragged    6080    2542.31    3718.10    4027.20    0.68    0.63    29.29
