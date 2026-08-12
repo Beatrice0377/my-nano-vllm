@@ -2,64 +2,83 @@
 <img width="300" src="assets/logo.png">
 </p>
 
-# Nano-vLLM Enhanced
+# my-nano-vLLM
 
-A lightweight research inference engine derived from
-[GeeeekExplorer/nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm).
+A compact inference-systems project derived from
+[GeeeekExplorer/nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)
+(baseline commit `bb823b3e`), not a from-scratch inference engine and not a
+production serving framework.
 
-This repository is **not a from-scratch implementation**. The initial code was
-imported from the upstream `bb823b3e` baseline commit and the local Git history
-was then reinitialized. The original MIT license and copyright attribution are
-retained in [`LICENSE`](LICENSE).
+The project keeps nano-vLLM's small and readable structure while experimenting
+with Triton kernels, mixed prefill/decode scheduling, and prefix-cache-aware
+scheduling. Changes are integrated only when measurements justify the added
+complexity.
 
-## Project scope
+## Results
 
-The project keeps nano-vLLM's small, readable style while adding a small number
-of measurable GPU-kernel and serving-system improvements. It is an educational
-and research codebase, not a production serving framework. The current model
-path is the Qwen3 path already supported by the baseline.
+| Change | Baseline | my-nano-vLLM | Measured effect |
+|---|---:|---:|---:|
+| Mixed scheduling, 1024-token shared budget | ~435 ms max incumbent decode gap | ~58 ms | ~87% lower worst observed decode stall |
+| Prefix affinity, 29-block KV-pressure workload | 16,379 executed prefill tokens | 14,319 | 12.6% less prefill work |
+| Fused Add+RMSNorm, large prefill rows | compiled PyTorch path | Triton fused kernel | ~1.3× kernel-level speedup (measured large-prefill shapes, RTX 5060 Laptop GPU) |
 
-Status of the roadmap below: Triton fused kernels (items 1-2), the unified
-mixed scheduler (item 3), and prefix-cache-affinity scheduling (item 4) are
-implemented and tested. Item 5 (persistent decode metadata) was profiled and
-intentionally not integrated after cost/benefit evaluation. See `docs/` for
-per-phase reports including measured results and their limits.
+These are workload-specific measurements, not universal speedups. Mixed
+scheduling mainly reduces rare decode stalls under token-budget contention;
+prefix affinity becomes useful only when KV allocation pressure can recycle
+otherwise reusable cached blocks. The Add+RMSNorm result is kernel-level
+(measured large-prefill shapes on the tested RTX 5060 Laptop GPU), not an
+end-to-end engine speedup. Details and limits are in `docs/`.
 
-## Roadmap
+## What changed
 
-1. [done] Triton fused add + RMSNorm, and SiLU × gate (add+RMSNorm is wired for
-   large prefill rows; SiLU × gate and plain RMSNorm keep the baseline torch
-   path — see `tests/kernels/` and `benchmarks/bench_kernels.py`).
-2. [done] Triton PagedAttention decode and FlashAttention prefill (standalone
-   kernels with correctness and latency benchmarks, not yet wired into the
-   engine — see `docs/phase3-paged-attention.md`, `docs/phase4-flash-attention.md`).
-3. [done] Unified mixed scheduling: decode-first, a shared token budget, chunked
-   prefill, and decode/prefill requests in one model batch (see
-   `docs/phase5-mixed-scheduling.md`).
-4. [done] Prefix-cache-affinity scheduling with a bounded candidate window and
-   aging (see `docs/phase6-prefix-affinity.md`).
-5. [profiled — not integrated] Persistent decode metadata to reduce repeated
-   Python/CPU-tensor/H2D setup: <1% projected gain on the representative
-   decode-heavy workload, intentionally not integrated after cost/benefit
-   evaluation (see `docs/phase7-persistent-decode-metadata.md`).
-6. Correctness and performance ablations covering kernel latency, TTFT, TPOT,
-   P50/P95, throughput, prefix-cache hits, prefill work, and input preparation.
+### Serving
 
-Non-goals for this phase are speculative decoding, quantization, LoRA, MoE,
-CPU KV offload, distributed serving, an HTTP server, async scheduling, complex
-KV eviction, arbitrary model support, and training kernels.
+- Unified decode/prefill scheduling with a shared token budget.
+- Chunked prefill while allowing incumbent decode work to continue.
+- Bounded prefix-cache-affinity selection with FIFO aging.
+- Pure decode retains CUDA Graph replay; mixed batches remain eager.
 
-## Installation
+### GPU kernels
 
-Install the dependencies in `pyproject.toml` in a CUDA-enabled environment. The
-FlashAttention dependency is platform and CUDA-version dependent, so the exact
-installation command is intentionally left to the target environment.
+- Triton fused Add+RMSNorm, selectively integrated for large prefill rows.
+- Standalone Triton SiLU×Gate and RMSNorm experiments.
+- Standalone Triton PagedAttention decode.
+- Standalone Triton causal varlen prefill FlashAttention.
+
+### Measurement
+
+- Token-level TTFT and TPOT (P50/P95).
+- Prefix-cache lookup/reuse accounting.
+- Executed vs scheduled prefill work.
+- Contention and KV-cache-pressure workloads.
+- Focused decode metadata profiling.
+
+## Evaluated but not integrated
+
+| Change | Status | Why not integrated |
+|---|---|---|
+| Triton SiLU × Gate | Standalone | No consistent advantage over the compiled baseline. |
+| Triton PagedAttention decode | Standalone | Correct, but slower than FlashAttention on the tested RTX 5060 Laptop GPU for most measured batch sizes. |
+| Triton prefill FlashAttention | Standalone | Near parity for short sequences, slower than FlashAttention 2 as sequence length grows on the tested GPU. |
+| Persistent decode metadata | Not integrated | Profiling and write-path prototypes projected <1% gain for the representative decode-heavy workload. |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Waiting / Running Requests] --> B[Scheduler]
+    B --> C[Decode + Prefill Batch]
+    B --> D[Block Manager / Prefix Cache]
+    C --> E[Model Runner]
+    E --> F[CUDA Graph<br/>Pure Decode]
+    E --> G[Eager<br/>Prefill / Mixed]
+```
+
+## Quick start
 
 ```bash
 pip install -e .
 ```
-
-## Quick start
 
 ```python
 from nanovllm import LLM, SamplingParams
@@ -72,19 +91,18 @@ outputs = llm.generate(
 print(outputs[0]["text"])
 ```
 
-See [`example.py`](example.py) for a chat-template example. The model argument
-must point to a local Hugging Face model directory containing its config and
-weight files, not merely the root of a cache layout.
+The model argument must point to a local Hugging Face model directory
+containing config, tokenizer, and weight files. See [`example.py`](example.py)
+for a chat-template example.
 
-## Baseline benchmark
+## Benchmarking
 
-[`bench.py`](bench.py) is a small offline harness over the existing
+[`bench.py`](bench.py) is an offline harness over the existing
 `LLMEngine.step()` loop; it does not add a server or alter scheduling. It has
-three fixed-seed workloads: `balanced`, `decode-heavy`, and `prefix-sharing`.
-Each successful run writes a machine-readable JSON result under
-`benchmarks/results/` with synchronized step rates, token-level TTFT/TPOT,
-request latency P50/P95, block-level prefix-cache counters,
-input-preparation call time, and peak allocated GPU memory.
+fixed-seed workloads and writes machine-readable JSON results under
+`benchmarks/results/` with synchronized step timing, token-level TTFT/TPOT,
+output tokens/s, executed/scheduled prefill tokens, prefix-cache reuse, input
+preparation CPU time, and peak allocated GPU memory.
 
 ```bash
 python3 bench.py --workload balanced --model /path/to/Qwen3-0.6B
@@ -92,13 +110,27 @@ python3 bench.py --workload decode-heavy --model /path/to/Qwen3-0.6B
 python3 bench.py --workload prefix-sharing --model /path/to/Qwen3-0.6B
 ```
 
-See [`docs/phase1-benchmark.md`](docs/phase1-benchmark.md) for metric
-definitions and [`docs/environment.md`](docs/environment.md) for the pinned
-validation target. No result file is written when CUDA is unavailable or the
-model directory is incomplete. Results from the old upstream README are not
-treated as this project's baseline until reproduced in the same environment.
+## Documentation
+
+| Topic | Doc |
+|---|---|
+| Baseline / benchmark methodology | [`docs/phase1-benchmark.md`](docs/phase1-benchmark.md) |
+| Triton fused kernels | [`docs/phase0-baseline.md`](docs/phase0-baseline.md) |
+| PagedAttention | [`docs/phase3-paged-attention.md`](docs/phase3-paged-attention.md) |
+| Prefill FlashAttention | [`docs/phase4-flash-attention.md`](docs/phase4-flash-attention.md) |
+| Mixed scheduling | [`docs/phase5-mixed-scheduling.md`](docs/phase5-mixed-scheduling.md) |
+| Prefix-cache affinity | [`docs/phase6-prefix-affinity.md`](docs/phase6-prefix-affinity.md) |
+| Persistent decode metadata profiling | [`docs/phase7-persistent-decode-metadata.md`](docs/phase7-persistent-decode-metadata.md) |
+| Environment | [`docs/environment.md`](docs/environment.md) |
+
+## Scope
+
+This is a small research/learning inference engine, not a production serving
+stack. It intentionally does not implement speculative decoding, quantization,
+LoRA, distributed serving, async scheduling, or an HTTP server.
 
 ## License and attribution
 
-This project retains the upstream MIT license and attribution. See
-[`LICENSE`](LICENSE) for the complete text.
+Derived from [GeeeekExplorer/nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)
+at upstream commit `bb823b3e`. The original MIT license and copyright
+attribution are retained in [`LICENSE`](LICENSE).
