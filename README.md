@@ -19,10 +19,11 @@ of measurable GPU-kernel and serving-system improvements. It is an educational
 and research codebase, not a production serving framework. The current model
 path is the Qwen3 path already supported by the baseline.
 
-Status of the roadmap below: Triton fused kernels (items 1-2) and the unified
-mixed scheduler (item 3) are implemented and tested. Item 4 (prefix-cache
-affinity) is the current next step. See `docs/` for per-phase reports including
-measured results and their limits.
+Status of the roadmap below: Triton fused kernels (items 1-2), the unified
+mixed scheduler (item 3), and prefix-cache-affinity scheduling (item 4) are
+implemented and tested. Item 5 (persistent decode metadata) was profiled and
+intentionally not integrated after cost/benefit evaluation. See `docs/` for
+per-phase reports including measured results and their limits.
 
 ## Roadmap
 
@@ -35,8 +36,12 @@ measured results and their limits.
 3. [done] Unified mixed scheduling: decode-first, a shared token budget, chunked
    prefill, and decode/prefill requests in one model batch (see
    `docs/phase5-mixed-scheduling.md`).
-4. Prefix-cache-affinity scheduling with a bounded candidate window and aging.
-5. Persistent decode metadata to reduce repeated Python/CPU-tensor/H2D setup.
+4. [done] Prefix-cache-affinity scheduling with a bounded candidate window and
+   aging (see `docs/phase6-prefix-affinity.md`).
+5. [profiled — not integrated] Persistent decode metadata to reduce repeated
+   Python/CPU-tensor/H2D setup: <1% projected gain on the representative
+   decode-heavy workload, intentionally not integrated after cost/benefit
+   evaluation (see `docs/phase7-persistent-decode-metadata.md`).
 6. Correctness and performance ablations covering kernel latency, TTFT, TPOT,
    P50/P95, throughput, prefix-cache hits, prefill work, and input preparation.
 
