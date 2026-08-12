@@ -45,11 +45,10 @@ class RMSNorm(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
             return self.rms_forward(x)
-        # Threshold from the RTX 5060 / Qwen3 microbenchmark crossover
-        # (Triton add_rms_norm only wins for large row counts); not a
-        # general hardware law.
-        if x.shape[0] >= 512:
-            return add_rms_norm(x, residual, self.weight, self.eps)
+        # Phase 2 evaluated a Triton add_rms_norm path for large row counts;
+        # committed process-level A/B runs showed no engine-level benefit, so
+        # the default runtime keeps the compiled PyTorch baseline. The Triton
+        # kernel remains available as a standalone experiment (add_rms_norm).
         return self.add_rms_forward(x, residual)
 
 

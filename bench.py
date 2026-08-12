@@ -190,7 +190,7 @@ def build_prefix_affinity_specs(
 
 def install_observers(llm):
     """Install benchmark-only observers without changing engine decisions."""
-    prepare_seconds = {"prefill": [], "decode": []}
+    prepare_seconds = {"prefill": [], "decode": [], "mixed": []}
     for mode in prepare_seconds:
         method_name = f"prepare_{mode}"
         original = getattr(llm.model_runner, method_name)
@@ -281,6 +281,30 @@ def validate_model_path(model: str):
         )
 
 
+def _git_commit() -> str:
+    import subprocess
+
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+        )
+        return out.decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _git_dirty() -> bool:
+    import subprocess
+
+    try:
+        out = subprocess.check_output(
+            ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL
+        )
+        return bool(out.strip())
+    except Exception:
+        return False
+
+
 def setup_llm(args: argparse.Namespace):
     """Import dependencies, check CUDA, construct and warm up the LLM."""
     try:
@@ -303,6 +327,17 @@ def setup_llm(args: argparse.Namespace):
         "cuda_available": cuda_available,
         "gpu": torch.cuda.get_device_name() if cuda_available else None,
     }
+    try:
+        import transformers
+        import flash_attn
+
+        environment["transformers_version"] = transformers.__version__
+        environment["flash_attn_version"] = flash_attn.__version__
+    except ImportError:
+        environment["transformers_version"] = "unknown"
+        environment["flash_attn_version"] = "unknown"
+    environment["git_commit"] = _git_commit()
+    environment["git_dirty"] = _git_dirty()
     if not cuda_available:
         raise SystemExit(
             "CUDA is unavailable in this process; no benchmark result was written.\n"
@@ -479,8 +514,10 @@ def compute_metrics(
         "prefix_cache_cached_tokens": cached_blocks * llm.scheduler.block_size,
         "input_prepare_prefill_cpu_ms": sum(prepare_seconds["prefill"]) * 1000,
         "input_prepare_decode_cpu_ms": sum(prepare_seconds["decode"]) * 1000,
+        "input_prepare_mixed_cpu_ms": sum(prepare_seconds["mixed"]) * 1000,
         "input_prepare_prefill_calls": len(prepare_seconds["prefill"]),
         "input_prepare_decode_calls": len(prepare_seconds["decode"]),
+        "input_prepare_mixed_calls": len(prepare_seconds["mixed"]),
         "peak_gpu_memory_allocated_mb": torch.cuda.max_memory_allocated() / 2**20,
     }
 

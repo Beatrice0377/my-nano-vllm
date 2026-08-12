@@ -168,4 +168,10 @@ def test_prefix_reuse_after_full_blocks():
     out2 = scheduler.schedule()
     assert len(out2.prefill_seqs) == 1
     scheduler.postprocess(out2.prefill_seqs, [0])
-    assert seq2.num_cached_tokens == 512  # both blocks reused
+    # Direct prefix lookup only checks range(num_blocks - 1), so a 2-block
+    # sequence hash-reuses only its first block (256 tokens). The remaining
+    # 256 tokens are scheduled as a chunk in the same round; after postprocess
+    # num_cached_tokens reaches 512. The second block is re-allocated, not
+    # directly reused. A 3-block (>=768-token) request is what reuses both
+    # shared-prefix blocks directly (see the Phase 6 docs).
+    assert seq2.num_cached_tokens == 512
