@@ -1,8 +1,7 @@
 # Phase 1 environment
 
-This is the first reproducible validation target. The Codex execution sandbox
-cannot see the host GPU; that observation does not describe the user's WSL
-environment.
+This is the reproducible validation target. GPU validation was performed in
+the environment documented below (Linux/WSL + CUDA 12.8).
 
 ## Constraints
 
@@ -123,9 +122,9 @@ PY
 
 ## Model preparation
 
-The existing `/home/beatrice/huggingface/Qwen3-0.6B` directory is a Hugging
-Face cache root, not a complete model directory. Prepare a separate local
-snapshot:
+A Hugging Face cache root (e.g. `~/.cache/huggingface/hub/...` or a directory
+containing only tokenizer links) is not a complete model directory. Prepare a
+separate local snapshot:
 
 ```bash
 MODEL_DIR=/path/to/models/Qwen3-0.6B

@@ -76,6 +76,11 @@ class LLMEngine:
         )
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
+        elif len(sampling_params) != len(prompts):
+            raise ValueError(
+                "sampling_params list length must match prompts length "
+                f"({len(sampling_params)} != {len(prompts)})"
+            )
         for prompt, sp in zip(prompts, sampling_params):
             self.add_request(prompt, sp)
         outputs = {}

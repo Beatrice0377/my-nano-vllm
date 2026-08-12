@@ -93,22 +93,22 @@ block-level prefix-cache lookup counters, scheduled/executed prefill tokens,
 and input-preparation call timing. The only engine change is an optional
 benchmark observer in `BlockManager.can_allocate()`; it is inactive by default.
 
-## Baseline run status in the Codex execution sandbox
+## Baseline run status
 
 On 2026-08-10 the source passed `python3 -m compileall -q .`, but the actual
-benchmark could not start:
+benchmark could not start in that validation environment:
 
 - Python: 3.12.3 (`/usr/bin/python3`)
 - PyTorch: 2.13.0+cu132; `torch.cuda.is_available()` was false
 - Triton: 3.7.1
 - `tqdm`, `transformers`, `flash-attn`, `xxhash`, and `safetensors` were not installed
 - `nvidia-smi` could not access NVML because GPU access was blocked
-- `/home/beatrice/huggingface/Qwen3-0.6B` was a cache root with tokenizer links,
-  not yet a confirmed local model snapshot containing config and weights
+- The model directory under test was a Hugging Face cache root with tokenizer
+  links, not a confirmed local model snapshot containing config and weights
 
-Consequently this sandbox has no GPU, throughput, or peak-memory numbers. This
-does not establish that the user's WSL/GPU host lacks a GPU. Run `bench.py`
-there after installing compatible dependencies and preparing the model snapshot.
+Consequently that environment produced no GPU, throughput, or peak-memory
+numbers. Run `bench.py` on the validated environment (see `docs/environment.md`)
+after installing compatible dependencies and preparing the model snapshot.
 
 ## Future dependency map
 

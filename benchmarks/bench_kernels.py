@@ -6,6 +6,10 @@ Ops:
   - Add + RMSNorm     (hidden 1024)
   - q/k per-head norm (hidden 128, Qwen3Attention QK-norm path)
 
+All RMSNorm variants benchmark bf16 activations with a bf16 weight parameter,
+matching the validated runtime (ModelRunner constructs the model under
+torch.set_default_dtype(hf_config.dtype)).
+
 Usage: .venv/bin/python benchmarks/bench_kernels.py
 Timing via triton.testing.do_bench (CUDA events, warmup + rep). Results are
 mean microseconds over the rep window. Compilation (torch.compile + Triton
@@ -71,10 +75,22 @@ def bench_silu():
 def bench_rms():
     baseline = RMSNorm(H, eps=1e-6).cuda()
     kernel = TritonRMSNorm(H, eps=1e-6).cuda()
-    print(f"\nRMSNorm (torch.compile) vs Triton, dtype={DTYPE}")
+    # Match the validated runtime: ModelRunner constructs the model under
+    # torch.set_default_dtype(hf_config.dtype), so the weight parameter has
+    # the same dtype as the activations (bf16 here), not fp32.
+    with torch.no_grad():
+        w = torch.nn.Parameter(torch.ones(H, device="cuda", dtype=DTYPE))
+        baseline.weight = w
+        kernel.weight = w
+    print(
+        f"\nRMSNorm (torch.compile) vs Triton, input_dtype={DTYPE} weight_dtype={DTYPE}"
+    )
     for shape in RMS_SHAPES:
         bench_row("rms", shape, lambda x: baseline.rms_forward(x), lambda x: kernel(x))
-    print(f"\nAdd+RMSNorm (torch.compile) vs Triton, dtype={DTYPE}")
+    print(
+        f"\nAdd+RMSNorm (torch.compile) vs Triton, input_dtype={DTYPE} "
+        f"weight_dtype={DTYPE}"
+    )
     for shape in RMS_SHAPES:
         r = torch.randn(*shape, device="cuda", dtype=DTYPE)
         bench_row(
@@ -83,9 +99,16 @@ def bench_rms():
             lambda x: baseline.add_rms_forward(x, r),
             lambda x: kernel(x, r),
         )
-    print(f"\nQK-norm [M,16,128] (torch.compile) vs Triton, dtype={DTYPE}")
+    print(
+        f"\nQK-norm [M,16,128] (torch.compile) vs Triton, input_dtype={DTYPE} "
+        f"weight_dtype={DTYPE}"
+    )
     qk_baseline = RMSNorm(128, eps=1e-6).cuda()
     qk_kernel = TritonRMSNorm(128, eps=1e-6).cuda()
+    with torch.no_grad():
+        qk_w = torch.nn.Parameter(torch.ones(128, device="cuda", dtype=DTYPE))
+        qk_baseline.weight = qk_w
+        qk_kernel.weight = qk_w
     for shape in QK_SHAPES:
         bench_row(
             "qk",
@@ -116,8 +139,9 @@ def bench_paged_attention():
     NUM_POOL = 512
     print(f"\nPagedAttention decode (bf16): flash-attn vs Triton")
     print(
-        f"{'ctx':>6} {'batch':>6} {'fa2':>9} {'triton32':>9} {'triton64':>9} {'32x':>6} {'64x':>6} {'logBW GB/s':>10}"
+        f"{'ctx':>6} {'batch':>6} {'fa2':>9} {'triton32':>9} {'triton64':>9} {'FA2/T32':>7} {'FA2/T64':>7} {'logBW GB/s':>10}"
     )
+    print("  relative = FA2_us / Triton_us; >1 means Triton is faster, <1 slower")
     for ctx in (256, 1024, 2048, 4096):
         for batch in (1, 16, 128):
             g = torch.Generator().manual_seed(ctx * 100 + batch)
@@ -198,7 +222,10 @@ def bench_flash_attention():
         ("ragged", [64, 128, 256, 512, 1024, 4096]),
     ]
     print(
-        f"{'case':>8} {'tokens':>7} {'FA2':>10} {'C1 64x64':>10} {'C2 32x64':>10} {'C1/FA2':>7} {'C2/FA2':>7} {'TF/s':>8}"
+        f"{'case':>8} {'tokens':>7} {'FA2':>10} {'C1 64x64':>10} {'C2 32x64':>10} {'FA2/C1':>7} {'FA2/C2':>7} {'FA2 TF/s':>9}"
+    )
+    print(
+        "  relative = FA2_us / custom_us; >1 means custom Triton is faster, <1 slower"
     )
     for label, lengths in lengths_cases:
         L = sum(lengths)

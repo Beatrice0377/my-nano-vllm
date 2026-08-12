@@ -59,6 +59,37 @@ def test_add_rms_norm(dtype, shape):
     torch.testing.assert_close(act_residual, exp_residual, rtol=1e-2, atol=1e-2)
 
 
+# Validated-runtime semantics: ModelRunner builds the model under
+# torch.set_default_dtype(hf_config.dtype), so the weight parameter has the
+# model dtype (bf16 for Qwen3-0.6B), not fp32. These cases cover that path.
+ADD_RMS_BF16_WEIGHT_SHAPES = [
+    (1, H_QWEN3),  # single decode row
+    (16, H_QWEN3),
+    (128, H_QWEN3),
+    (512, H_QWEN3),
+    (1024, H_QWEN3),
+    (4096, H_QWEN3),
+]
+
+
+@pytest.mark.parametrize("shape", ADD_RMS_BF16_WEIGHT_SHAPES)
+def test_add_rms_norm_bf16_weight(shape):
+    torch.manual_seed(0)
+    x = torch.randn(*shape, device="cuda", dtype=torch.bfloat16)
+    residual = torch.randn(*shape, device="cuda", dtype=torch.bfloat16)
+    ref = RMSNorm(shape[-1], eps=1e-6).cuda()
+    triton_mod = TritonRMSNorm(shape[-1], eps=1e-6).cuda()
+    with torch.no_grad():
+        bf16_w = torch.ones(shape[-1], device="cuda", dtype=torch.bfloat16)
+        ref.weight = torch.nn.Parameter(bf16_w)
+        triton_mod.weight = torch.nn.Parameter(bf16_w)
+    assert ref.weight.dtype == torch.bfloat16
+    exp_normed, exp_residual = ref.add_rms_forward(x, residual)
+    act_normed, act_residual = triton_mod(x, residual)
+    torch.testing.assert_close(act_normed, exp_normed, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(act_residual, exp_residual, rtol=1e-2, atol=1e-2)
+
+
 def test_qk_norm_3d():
     # Qwen3Attention q_norm/k_norm input: [M, num_heads, head_dim].
     torch.manual_seed(0)

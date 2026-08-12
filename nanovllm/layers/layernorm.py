@@ -76,7 +76,9 @@ def _rms_norm_kernel(
     scale = tl.rsqrt(var + eps)
     w = tl.load(w_ptr + offs, mask=mask, other=0.0)
     # Match baseline semantics: round (x*scale) back to the storage dtype,
-    # then the weight multiply runs in fp32 (weight is an fp32 parameter).
+    # then the weight multiply runs in fp32 (the weight is loaded as-is and
+    # follows the module/model dtype, e.g. bf16 in the validated Qwen3-0.6B
+    # runtime; accumulation happens in fp32 inside the kernel).
     y = (x * scale).to(DTYPE).to(tl.float32) * w
     tl.store(y_ptr + row * stride_m + offs, y, mask=mask)
 

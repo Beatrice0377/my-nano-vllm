@@ -119,7 +119,7 @@ Interpretation:
   (0.505 → 0.476) does not correspond to a change in total prefill compute in
   this workload.
 
-## Cache-pressure experiment (added in review round 2)
+## Cache-pressure experiment (additional validation)
 
 The no-pressure result above is the expected regime: with the free-block pool
 sufficient for this measured workload, the warmup-prefix blocks are never
