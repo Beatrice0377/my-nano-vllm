@@ -3,14 +3,16 @@
 ## Status
 
 Implemented, tested, and benchmarked against the real Phase 4 prefill-first
-code (git-HEAD scheduler semantics) under the same workload/config, all in a
-warm compile state. Verdict: functionally correct (mixed batches execute and
-produce identical text), throughput/TTFT/TPOT are within noise of the
-prefill-first baseline at every tested budget, but the mixed scheduler removes
-prefill-induced decode stalls when the shared token budget forces chunked
-prefill (see the incumbent-gap metric below). Details in the Benchmark section —
-do not cite this feature as an unconditional performance win; state the
-workload/config conditions it was measured under.
+code (commit `5c030cc`) under the same workload/config, all in a warm compile
+state. Verdict: functionally correct (mixed batches execute and produce
+deterministic expected completions; the E2E tests assert expected texts, not
+baseline-vs-mixed token equality), and aggregate throughput/TTFT/TPOT were
+similar to the prefill-first baseline at every tested budget in the recorded
+runs (no repeated-run variance estimate was collected). The mixed scheduler
+removes prefill-induced decode stalls when the shared token budget forces
+chunked prefill (see the incumbent-gap metric below). Details in the Benchmark
+section — do not cite this feature as an unconditional performance win; state
+the workload/config conditions it was measured under.
 
 ## Design (as implemented)
 
@@ -50,20 +52,21 @@ Sampling
   bound (`decode_count > token_budget` stays within budget), mixed budget sharing,
   chunked prefill stays in waiting, partial blocks never enter the prefix hash,
   full-block prefix reuse.
-- `tests/engine/test_runner.py` (8 tests): completed-prefill-seq detection, token
-  mapping for pure decode / pure prefill / mixed with chunked placeholder.
-- `tests/engine/test_e2e_mixed.py` (3 tests, GPU): identical text for pure decode
-  ("Paris..."), pure prefill ("Tokyo..."), and a mixed batch (2 decoding + 1
-  prefill, 1 mixed step observed, correct completions).
-- Full suite: **122 passed**.
+- `tests/engine/test_runner.py` (4 tests): completed-prefill-seq detection.
+- `tests/engine/test_e2e_mixed.py` (GPU): deterministic expected completions for
+  pure decode ("Paris..."), pure prefill ("Tokyo..."), and a mixed batch
+  (2 decoding + 1 prefill, >=1 mixed step observed), plus eager-vs-CUDA-graph
+  completion-token parity after mixed steps.
+- Full suite: **137 passed** (post-Phase-6 head).
 
 ## Benchmark (contention workload, seed 0, warm compile state)
 
 Both variants were measured with the same contention workload (stage 1: 16 short
 prompt/long output; stage 2: 4 long prompts, 6495 tokens) on the real code — the
-baseline is the git-HEAD prefill-first scheduler, the mixed variant is this
-Phase 5 implementation — at three `max_num_batched_tokens` values. All runs are
-warm (first-step torch.compile happens during warmup). JSON:
+baseline is the Phase 4 prefill-first scheduler at commit `5c030cc`, the mixed
+variant is this Phase 5 implementation — at three `max_num_batched_tokens`
+values. All runs are warm (first-step torch.compile happens during warmup).
+JSON:
 `benchmarks/results/phase5-{baseline,mixed}-contention-{16384,2048,1024}.json`.
 
 | budget | variant  | elapsed | out tok/s | TTFT p50/p95 | TPOT p50/p95 | lat p50/p95 |
@@ -96,14 +99,14 @@ Interpretation:
 
 - At the default budget (16384) the stage-2 prefill (6495 tokens) fits in one
   step, so the baseline pauses decode for one ~0.28 s step and mixed cannot do
-  better — throughput/TTFT/TPOT and even the max incumbent gap (~280 ms) are the
-  same within noise. The mixed path is essentially not exercised.
+  better — throughput/TTFT/TPOT and even the max incumbent gap (~280 ms) are
+  similar in the recorded runs. The mixed path is essentially not exercised.
 - When the budget forces chunked prefill (2048, 1024), the baseline stalls all
   decodes for every prefill chunk (max incumbent gap 290→435 ms); mixed keeps
   decodes moving and bounds the max incumbent gap at ~85 ms (2048) / ~58 ms
-  (1024). End-to-end numbers stay within noise because decode is only ~4 s of
-  the run and prefill work is identical — the win is in *latency variance of
-  incumbent decodes*, not aggregate throughput.
+  (1024). End-to-end numbers differed by ~1–3% in the recorded runs because
+  decode is only ~4 s of the run and prefill work is identical — the win is in
+  *latency variance of incumbent decodes*, not aggregate throughput.
 - TPOT p50/p95 never differ (9.8/10.5 ms everywhere): a stall shows up as a gap
   in only ~16 of 6841 inter-token samples (0.23 %), below the P95 quantile. The
   incumbent-gap distribution above keeps those rare gaps visible; P99.9 and max
@@ -111,10 +114,11 @@ Interpretation:
 
 ### Decode-heavy regression check
 
-The same decode-heavy workload run on the Phase 4 code vs this implementation
-shows no pure-decode regression (both with CUDA graphs, warm): elapsed
-39.14 s → 38.94 s, output 2528 → 2541 tok/s, TTFT p50/p95 626/909 → 640/945 ms,
-TPOT p50/p95 17.86/20.81 → 18.15/21.29 ms — all within run-to-run noise.
+The same decode-heavy workload run on the Phase 4 code (commit `5c030cc`) vs
+this implementation shows no pure-decode regression (both with CUDA graphs,
+warm): elapsed 39.14 s → 38.94 s, output 2528 → 2541 tok/s, TTFT p50/p95
+626/909 → 640/945 ms, TPOT p50/p95 17.86/20.81 → 18.15/21.29 ms — similar in
+the recorded runs (no repeated-run variance estimate was collected).
 
 ### Note on the logits_indices sync bug
 

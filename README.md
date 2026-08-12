@@ -19,15 +19,20 @@ complexity.
 | Improvement | Measured scenario | Baseline → Ours | Result |
 |---|---|---|---|
 | Mixed scheduling | Max incumbent decode gap, 1024-token shared budget | ~435 ms → ~58 ms | **~87% lower** |
-| Prefix affinity | Executed prefill tokens, 29-block KV pressure | 16,379 → 14,319 | **12.6% less work** |
-| Fused Add+RMSNorm | Large-prefill kernel benchmark | compiled PyTorch → Triton | **~1.3× faster** |
+| Prefix affinity | Executed prefill tokens, 29-block KV pressure | 15,957 → 15,427 | **3.3% less work** |
+| Fused Add+RMSNorm | Standalone large-prefill microbenchmark | compiled PyTorch → Triton | **~1.3× faster** |
 
 These are workload-specific measurements, not universal speedups. Mixed
 scheduling mainly reduces rare decode stalls under token-budget contention;
 prefix affinity reduces recomputation only when KV allocation pressure is high
-enough to recycle reusable cached blocks; the Add+RMSNorm result is
-kernel-level (measured large-prefill shapes on the tested RTX 5060 Laptop GPU),
-not an end-to-end engine speedup. Details and limits are in `docs/`.
+enough to recycle reusable cached blocks (3.3% executed-prefill reduction in
+the canonical pressure workload, reproducible via
+[`benchmarks/bench_prefix_affinity_pressure.py`](benchmarks/bench_prefix_affinity_pressure.py);
+elapsed time did not improve in the recorded run — the result is a compute-work
+reduction, not a speedup); the Add+RMSNorm result is a standalone microkernel
+result (measured large-prefill shapes on the tested RTX 5060 Laptop GPU) —
+process-level A/B runs did not show a clear engine-level benefit, so the Triton
+path is not used by the default runtime. Details and limits are in `docs/`.
 
 ## What changed
 
@@ -40,7 +45,9 @@ not an end-to-end engine speedup. Details and limits are in `docs/`.
 
 ### GPU kernels
 
-- Triton fused Add+RMSNorm, selectively integrated for large prefill rows.
+- Standalone Triton fused Add+RMSNorm (microkernel with correctness and
+  performance evaluation; engine-level A/B showed no clear benefit, so the
+  default runtime keeps the compiled PyTorch path).
 - Standalone Triton SiLU×Gate and RMSNorm experiments.
 - Standalone Triton PagedAttention decode.
 - Standalone Triton causal varlen prefill FlashAttention.
@@ -67,8 +74,14 @@ flowchart LR
 
 ## Quick start
 
+Validated environment: Linux/WSL with CUDA 12.8, PyTorch 2.7.0+cu128,
+Triton 3.3.1, FlashAttention 2.7.4.post1, Transformers 4.51.3, Qwen3-0.6B.
+Install the CUDA/PyTorch/Triton/FlashAttention stack first; see
+[`docs/environment.md`](docs/environment.md).
+
 ```bash
-pip install -e .
+# after the validated environment above is in place:
+pip install -e . --no-deps --no-build-isolation
 ```
 
 ```python
@@ -83,8 +96,11 @@ print(outputs[0]["text"])
 ```
 
 The model argument must point to a local Hugging Face model directory
-containing config, tokenizer, and weight files. See [`example.py`](example.py)
-for a chat-template example.
+containing config, tokenizer, and weight files. The custom model
+implementation is validated on **Qwen3-0.6B**; unsupported Qwen3
+configuration features (attention bias, sliding-window attention, RoPE
+scaling) fail fast rather than silently producing incorrect outputs. See
+[`example.py`](example.py) for a chat-template example.
 
 ## Benchmarking
 

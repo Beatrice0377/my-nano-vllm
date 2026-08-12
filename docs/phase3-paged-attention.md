@@ -85,7 +85,10 @@ grid = (batch, num_query_heads)        # program <-> (sequence, query head)
 One program: load one q vector (fp32) → map to KV head → walk paged KV blocks
 (inner loop over `BLOCK_N`-sized tiles inside each 256-token physical block) → online softmax →
 store one head output. `BLOCK_N ∈ {32, 64}`; v1 selected config: **BLOCK_N=64, num_warps=4**
-(ptxas: 248 regs, 0 spills; ~50% occupancy at 2×128-thread blocks/SM).
+(ptxas: 248 registers/thread, 0 spills). High register pressure limits resident
+blocks/warps on the tested sm_120 GPU. No profiler-based achieved-occupancy
+measurement was collected, so this document does not claim a measured occupancy
+percentage.
 
 ## 6. Correctness strategy
 
@@ -102,33 +105,46 @@ physical blocks, batch=128 vs FA2, both BLOCK_N configs, all 16 query heads (GQA
 
 ## 7. Benchmark result
 
-`benchmarks/bench_kernels.py` — `bench_paged_attention()` (bf16, `do_bench` w25/r100, µs):
+`benchmarks/bench_kernels.py` — `bench_paged_attention()` (bf16, `do_bench`
+w25/r100, µs, RTX 5060 Laptop GPU, short warmup first). Ratio = FA2 / Triton;
+**> 1 means Triton is faster, < 1 means slower**:
 
-| ctx | batch | FA2 | triton64 | 64/FA2 |
+| ctx | batch | FA2 | triton64 | FA2 / Triton |
 |---|---|---|---|---|
-| 256 | 1 | 17.3 | 19.5 | 1.02x |
-| 256 | 16 | 66.2 | 71.1 | 0.90x |
-| 256 | 128 | 371.7 | 487.4 | 0.77x |
-| 1024 | 1 | 31.3 | 47.4 | 0.66x |
-| 1024 | 16 | 199.9 | 249.5 | 0.79x |
-| 1024 | 128 | 1241 | 1940 | 0.64x |
-| 2048 | 16 | 383.3 | 501.5 | 0.77x |
-| 4096 | 1 | 67.5 | 136.7 | 0.49x |
-| 4096 | 16 | 682.0 | 886.9 | 0.82x |
-| 4096 | 128 | 2347 | 3576 | ~0.66x |
+| 256 | 1 | 19.4 | 20.5 | 0.94 |
+| 256 | 16 | 64.9 | 71.2 | 0.91 |
+| 256 | 128 | 374.8 | 483.7 | 0.77 |
+| 1024 | 1 | 32.3 | 46.8 | 0.69 |
+| 1024 | 16 | 199.3 | 245.0 | 0.81 |
+| 1024 | 128 | 1237.8 | 1929.8 | 0.64 |
+| 2048 | 1 | 42.6 | 78.5 | 0.54 |
+| 2048 | 16 | 384.1 | 497.9 | 0.77 |
+| 2048 | 128 | 2346.4 | 3554.6 | 0.66 |
+| 4096 | 1 | 68.6 | 137.4 | 0.50 |
+| 4096 | 16 | 681.0 | 890.0 | 0.77 |
+| 4096 | 128 | 4662.1 | 6785.6 | 0.69 |
 
-BLOCK_N=64 beats BLOCK_N=32 everywhere. Logical KV bandwidth at batch=128: FA2 722–915 GB/s,
-Triton ~480–600 GB/s.
+Ratios are `FA2_us / Triton_us`, computed by script from the committed raw
+artifact `benchmarks/results/kernels-benchmark-raw-10db113.txt` (single
+re-run of `benchmarks/bench_kernels.py` in the clean commit-1 worktree;
+earlier versions of this document transcribed stale latency values).
+Min/max ratio across the table: 0.50–0.94x, no measured configuration was
+faster than FA2. BLOCK_N=64 beats
+BLOCK_N=32 everywhere. Logical KV bandwidth at batch=128: FA2 727–924 GB/s
+(computed as `batch*H*ctx*2*D*2 bytes / FA2 latency`; logical, not DRAM
+traffic).
 
-*Timing caveat:* absolute latency showed sensitivity to GPU clock/power/runtime state across
-processes (fresh-process runs measured ~2x slower than the same config inside the full bench
-run), while the relative ordering and Triton/FA2 ratios stayed stable across repeated
-measurements. Root cause was not pinned to a specific mechanism (no clock/profiler evidence);
-a short GPU warmup was added before this section to stabilize independent runs.
+*Timing caveat:* absolute latency showed sensitivity to GPU clock/power/runtime
+state across processes (fresh-process runs measured ~2x slower than the same
+config inside the full bench run), while the relative ordering and Triton/FA2
+ratios stayed stable across repeated measurements. Root cause was not pinned to
+a specific mechanism (no clock/profiler evidence); a short GPU warmup was added
+before this section to stabilize independent runs.
 
 ## 8. Why no runtime integration
 
-v1 proves correctness (three-way check) but benchmarks at 0.49–0.82x of FA2; forcing it into
+v1 proves correctness (three-way check) but benchmarks at 0.50–0.94x of FA2
+(no measured configuration was faster); forcing it into
 the decode path would be a real regression. Project principle is benchmark-driven engineering:
 a self-written kernel is not required to become the default backend. Kept as a standalone,
 reviewable implementation of the PagedAttention mechanism.

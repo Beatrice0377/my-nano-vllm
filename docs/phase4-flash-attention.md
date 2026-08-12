@@ -151,24 +151,33 @@ Key cases (all in `tests/kernels/test_flash_attention.py`, 28 tests):
 
 ## 8. Benchmark
 
-bf16, `do_bench(warmup=25, rep=100)`, microseconds, RTX 5060:
+bf16, `do_bench(warmup=25, rep=100)`, microseconds, RTX 5060 Laptop GPU.
+Raw timings are the committed artifact
+`benchmarks/results/kernels-benchmark-raw-10db113.txt` (single re-run of
+`benchmarks/bench_kernels.py` in the clean commit-1 worktree); ratios =
+FA2 / Triton, computed by script from that artifact, > 1 means Triton faster:
 
-| seq/batch | FA2 | Triton 64x64 | Triton 32x64 | best relative |
+| seq/batch | FA2 | Triton 64x64 | Triton 32x64 | FA2 / Triton (best) |
 | --- | ---: | ---: | ---: | ---: |
-| L=128 | 16.9 | 18.6 | 18.5 | 0.91x |
-| L=256 | 34.4 | 34.5 | 35.8 | 1.00x |
-| L=512 | 74.8 | 84.2 | 93.7 | 0.89x |
-| L=1024 | 200.9 | 258.9 | 276.1 | 0.78x |
-| L=2048 | 648.8 | 898.5 | 962.3 | 0.72x |
-| L=4096 | 2293 | 3380 | 3585 | 0.68x |
-| varlen (7872 tok) | 3081 | 4517 | 4928 | 0.68x |
-| ragged (6080 tok) | 2528 | 3722 | 4022 | 0.68x |
+| L=128 | 18.0 | 19.9 | 19.8 | 0.91 |
+| L=256 | 35.2 | 35.8 | 36.7 | 0.98 |
+| L=512 | 76.8 | 84.9 | 91.2 | 0.91 |
+| L=1024 | 201.0 | 259.4 | 277.0 | 0.77 |
+| L=2048 | 646.4 | 893.4 | 968.5 | 0.72 |
+| L=4096 | 2300.2 | 3388.8 | 3607.6 | 0.68 |
+| varlen (7872 tok) | 3097.5 | 4552.4 | 4962.6 | 0.68 |
+| ragged (6080 tok) | 2532.7 | 3735.5 | 4052.4 | 0.68 |
 
 The negative result is real and is not hidden: the custom kernel is at parity
-for short sequences and 0.68-0.78x of FA2 for long-prefill workloads.
+for short sequences and 0.68–0.98x of FA2 for long-prefill workloads.
 Logical causal-attention TFLOP/s (computed as `2*D*H*Σ L_s*(L_s+1)`, not a
-hardware tensor-core utilization claim) reaches ~30 TF/s at L=4096, which is
-near the serial per-(sequence, head) program limit of this kernel's structure.
+hardware tensor-core utilization claim) at L=4096, from the same raw
+latencies: FLOPs = `2*128*16*4096*4097` = 68,736,253,952 → **FA2 ≈ 29.9 TF/s,
+Triton ≈ 20.3 TF/s** (`68,736,253,952 / 2300.16e-6 / 1e12` and
+`68,736,253,952 / 3388.85e-6 / 1e12`). The kernel remains slower than
+FlashAttention 2 as sequence length grows; this project did not profile the
+hardware bottleneck deeply enough to attribute the gap to a single limiting
+factor.
 
 ## 9. Why Not Integrated
 

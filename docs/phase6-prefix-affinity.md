@@ -2,20 +2,21 @@
 
 ## Status
 
-Implemented, tested, and benchmarked against a FIFO-only scheduler baseline
-(git-HEAD scheduler without the affinity reorder) under the same prefix-sharing
-workload at three token-budget settings. Under the no-pressure workload (the
-KV pool, even at the default `gpu_memory_utilization`, leaves ~160 blocks —
-more than the ~100 the workload needs — so warmup cache blocks are never
-evicted), the affinity reorder does **not** reduce executed prefill tokens or
-improve aggregate throughput, because cache hits are reachable regardless of
-scheduling order. It does shift request completion order — shared-prefix
-requests are prefilled earlier and get a lower TTFT (see Benchmark section) —
-at the cost of slightly later cold requests. Under explicit cache pressure
-(small KV pool, see Cache-pressure experiment), the affinity reorder does
-reduce executed prefill tokens by scheduling shared hits before the warm
-blocks are recycled. State the workload/config conditions, not an
-unconditional win.
+Implemented, tested, and benchmarked against a FIFO-only selection baseline
+(the same runtime code with `_select_prefill()` monkeypatched to strict FIFO
+inside the benchmark process — no production source change) under the same
+prefix-sharing workload at three token-budget settings. Under the no-pressure
+workload (the KV pool, even at the default `gpu_memory_utilization`, leaves
+~160 blocks — more than the ~100 the workload needs — so warmup cache blocks
+are never evicted), the affinity reorder does **not** reduce executed prefill
+tokens or improve aggregate throughput, because cache hits are reachable
+regardless of scheduling order. It does shift request completion order —
+shared-prefix requests are prefilled earlier and get a lower TTFT (see
+Benchmark section) — at the cost of slightly later cold requests. Under
+explicit cache pressure (small KV pool, see Cache-pressure experiment), the
+affinity reorder does reduce executed prefill tokens by scheduling shared hits
+before the warm blocks are recycled. State the workload/config conditions, not
+an unconditional win.
 
 ## Design (as implemented)
 
@@ -77,7 +78,8 @@ with a 512-token shared prefix, `n` empty tokens) followed by 24 measured
 requests alternating cold / shared-hit: 12 cold with unique 768–1024-token
 prompts, 12 sharing the 512-token prefix (even request indices cold, odd
 shared-hit). The FIFO baseline is the identical code with the affinity scan
-statically bypassed (a separate worktree copy at git HEAD). All runs warm.
+bypassed via the benchmark-only FIFO policy (see the canonical pressure
+harness below for the exact mechanism). All runs warm.
 Each JSON records the actual KV pool size at runtime:
 `metrics.num_kvcache_blocks` and `metrics.gpu_memory_utilization` (the pool is
 computed by the model runner from device memory, weights, and the requested
@@ -108,8 +110,9 @@ Interpretation:
   537→494 ms (−8 %); at 1024, 858→701 ms (−18 %), and TTFT p95 drops
   1432→1373 ms. Cold requests are pushed later; this is a request-ordering /
   prioritization trade-off, not a compute saving.
-- Aggregate throughput/elapsed/TPOT are within noise (±1 %). At the default
-  budget (16384) the whole workload prefills in one step, so the scan is never
+- Aggregate throughput/elapsed/TPOT were similar in the recorded runs (±1 %;
+  no repeated-run variance estimate was collected). At the default budget
+  (16384) the whole workload prefills in one step, so the scan is never
   meaningfully exercised and both schedulers are identical.
 - Scheduler ordering changes observer-visible lookup history. Because executed
   prefill tokens remain identical, the hit-rate difference at budget 1024
@@ -134,21 +137,79 @@ allocations actually approach recycling the warm hashed-but-deallocated blocks:
   physical blocks are recycled (`hash_to_block_id` entry removed by
   `_allocate_block`) and how many shared-hit requests still reuse the warm
   physical blocks.
-- At util 0.45 / cold-first, the FIFO baseline recycles the warm blocks early
-  (step ~1/32), so the first shared-hit request prefills from scratch, while
-  affinity schedules the shared hits before the pool is exhausted (recycled at
-  step ~452, all hits reuse 2/2 warm blocks): executed prefill tokens 16379
-  (FIFO) vs 14319 (affinity), a −12.6 % reduction. Elapsed time is within noise
-  (27.1 s vs 26.6 s): the saved prefill work is real but too small to change
-  end-to-end throughput on this model/GPU/workload.
+- At util 0.45 / cold-first, the FIFO baseline recycles the warm blocks early,
+  so the first shared-hit requests prefill with the warm hash gone, while
+  affinity schedules the shared hits before the pool is exhausted (all hits
+  reuse 2/2 warm physical blocks): executed prefill tokens 15957 (FIFO) vs
+  15427 (affinity), a −3.3 % reduction (reproducible via
+  `benchmarks/bench_prefix_affinity_pressure.py`, see the next section). Elapsed
+  time did **not** improve in the recorded runs: 26.31 s (FIFO) vs 26.70 s
+  (affinity). The result is therefore presented as a compute-work reduction,
+  not an end-to-end speedup; no repeated-run variance estimate was collected.
 - At util 0.40 (15 blocks) the pool is so small that even the affinity scan
   cannot get a shared hit in front of the cold batch; both schedulers behave
   identically. At util 0.50 (44 blocks) the pool is large enough that recycling
   happens late or not at all, and again no executed-token difference appears.
 - Caveat: these pressure runs use the same model/seed/prompts as the main
-  workload, but a debug-only instrumentation harness rather than `bench.py`'s
-  full metric pipeline; the FIFO baseline is a separate worktree at git HEAD
-  (no affinity code), sharing the identical KV block pool sizing.
+  workload, but a dedicated harness
+  (`benchmarks/bench_prefix_affinity_pressure.py`) rather than `bench.py`'s full
+  metric pipeline; the FIFO baseline is the same runtime code with the
+  benchmark-only FIFO monkeypatch, so the comparison isolates the
+  waiting-queue selection policy on one code checkout.
+
+## Cache-pressure benchmark (canonical, reproducible)
+
+`benchmarks/bench_prefix_affinity_pressure.py` reproduces the canonical
+pressure case. Canonical parameters: `seed=0`, `gpu_memory_utilization=0.45`,
+`max_num_batched_tokens=16384`, cold-first arrangement, 10 cold requests then
+14 shared-hit requests, 512-token shared prefix. Both modes run on the same
+runtime code version, so the experiment isolates the waiting-queue selection
+policy: `--mode affinity` uses the production `_select_prefill()`; `--mode
+fifo` monkeypatches `_select_prefill()` inside the benchmark process to a
+strict FIFO head selection (chunked head continues first, infeasible head
+stops the loop, no candidate scan — production scheduler source is not
+modified and no runtime flag is added). Run:
+
+```
+# affinity (production selector, this checkout)
+python benchmarks/bench_prefix_affinity_pressure.py \
+    --mode affinity --output benchmarks/results/phase6-pressure-affinity.json \
+    --model "$MODEL"
+
+# FIFO baseline (same checkout, benchmark-only monkeypatch)
+python benchmarks/bench_prefix_affinity_pressure.py \
+    --mode fifo --output benchmarks/results/phase6-pressure-fifo.json \
+    --model "$MODEL"
+```
+
+Results recorded at HEAD `10db113` (both modes, same GPU, seed 0):
+
+| metric | FIFO | affinity |
+|---|---|---|
+| actual KV blocks | 29 | 29 |
+| elapsed (s) | 26.31 | 26.70 |
+| total prefill tokens executed | 15957 | 15427 |
+| shared-hit warm reuse (physical) | 0 / 28 | 28 / 28 |
+| shared-hit reprefill work (tokens) | 825 | 0 |
+| shared-hit requests preempted | 3 | 0 |
+
+Reduction in executed prefill tokens:
+
+```
+(FIFO − affinity) / FIFO = (15957 − 15427) / 15957 ≈ 3.3 %
+```
+
+Elapsed time was similar in this recorded run (26.31 s vs 26.70 s); the
+result is presented as a compute-work reduction, not an end-to-end speedup.
+No repeated-run variance estimate was collected.
+
+An earlier 12.6% pressure result (16,379 → 14,319 executed tokens) remains a
+historical recorded run, but its original debug harness was not committed, so
+its reproduction provenance is insufficient. The project headline uses the
+result generated by the committed reproducible harness above.
+
+The JSON records `num_kvcache_blocks` (29 at util 0.45 on this GPU), both
+commits, and per-request attribution.
 
 ## Cache-pressure attribution (util 0.45 / cold-first, seed 0)
 
@@ -163,48 +224,47 @@ requests: 10 cold first, then 14 shared-hit; each shared-hit request has a
 | warm-block reuse events (physical ids match) | 0 | 28 |
 | shared requests with any warm reuse | 0 | 14 |
 | shared requests with full 2-block reuse | 0 | 14 |
-| shared-hit prefill tokens, first prefill | 5236 | 4724 |
-| shared-hit prefill tokens, executed (incl. re-prefill) | 6719 | 5253 |
-| shared-hit re-prefill work (executed − first) | 1483 | 529 |
-| shared-hit requests preempted | 4 (20,21,22,25) | 2 (20,24) |
-| cold requests preempted | 1 (11) | 1 (11) |
-| total prefill tokens executed | 16379 | 14319 |
+| shared-hit prefill tokens, executed (incl. re-prefill) | 6597 | 5260 |
+| shared-hit re-prefill work (executed − first) | 825 | 0 |
+| shared-hit requests preempted | 3 | 0 |
+| preempted sequences (all) | 5 | 2 |
+| total prefill tokens executed | 15957 | 15427 |
 
-The net difference (−2060 tokens) decomposes as:
+The net difference (−530 tokens) decomposes as:
 
-- **−512 tokens from preserved warm-prefix reuse**: the only first-prefill
-  difference is request 15 (868 tokens in FIFO vs 356 in affinity, one full
-  2-block reuse). In FIFO every later shared-hit request still finds the
-  shared-prefix hash (re-created by request 15's own prefill), so it also skips
-  512 tokens — but against the *re-warmed* blocks, not the original warm
-  physical blocks. This is why physical warm reuse is 0/28 while first-prefill
-  hits 2/2 blocks for requests 17–28 (request 16's first `can_allocate` probe
-  already sees the warm hash gone in FIFO, but its actual prefill step runs
-  after request 15's prefill has re-created the shared-prefix hash).
-- **−954 tokens from different preemption/recompute behavior**: FIFO preempts
-  four shared-hit requests (re-prefill 1483 tokens), affinity only two
-  (529 tokens).
-- **−594 tokens from cold-side scheduling differences**: cold requests execute
-  9660 tokens in FIFO vs 9066 in affinity (the reorder changes which requests
-  are preempted and how much of their prefill must be re-executed).
+- **−512 tokens from preserved warm-prefix reuse**: shared-hit *first* prefill
+  totals 5772 tokens in FIFO (6597 − 825 reprefill) vs 5260 in affinity — a
+  512-token difference equal to one full 2-block reuse of the warm shared
+  prefix. In FIFO the first shared-hit request's own prefill re-creates the
+  shared-prefix hash against re-allocated blocks, so later shared hits skip 512
+  tokens against the *re-warmed* blocks, not the original warm physical blocks;
+  physical warm reuse is 0/28 in FIFO while first-prefill hits 2/2 blocks for
+  most later shared-hit requests.
+- **−825 tokens from different preemption/recompute behavior**: FIFO preempts
+  three shared-hit requests (825 tokens of re-prefill work); affinity preempts
+  none of them.
+- **+807 tokens from cold-side scheduling differences**: cold requests execute
+  9360 tokens in FIFO vs 10167 in affinity — the reorder changes which requests
+  are preempted and how much of their prefill must be re-executed. The recorded
+  preempted sequence counts (5 in FIFO vs 2 in affinity) reflect different
+  preemption/recompute allocations on both sides of the schedule; the cold-side
+  +807 tokens are not a direct consequence of preserving the warm blocks.
 
 512 tokens of the net reduction are directly attributable to preserving the
 original two-block shared prefix for the first shared-hit request. The
-remaining 1,548 tokens come from indirect changes in preemption and re-prefill
-work caused by the reordered schedule under tight KV-cache capacity. The
-cold-side −594 tokens reflect a different preemption/recompute allocation
-across cold requests under the reordered schedule; they are not a direct
-consequence of preserving the warm blocks.
+remaining 18 tokens come from the difference between preemption/recompute
+reduction (−825) and cold-side scheduling effects (+807). The cold-side
+difference reflects a different preemption/recompute allocation across cold
+requests under the reordered schedule; it is not a direct consequence of
+preserving the warm blocks.
 
 ## CPU overhead
 
-`_select_prefill()` adds a bounded probe scan over up to 7 candidates. Measured
-in a CPU-only microbenchmark (`bench_cpu_overhead.py`, 6 cold + 6 shared-hit
-sequences, median over repeated `schedule()` calls): FIFO ≈ 27–34 µs per
-schedule call, affinity ≈ 69–83 µs. Bounded affinity probing adds roughly
-40–50 µs of scheduler CPU work per relevant scheduling call in the measured
-workloads. This is small compared with millisecond-scale model execution in
-the tested configuration, and it is paid only when a prefill decision is made.
+`_select_prefill()` adds a bounded probe scan over at most seven non-head
+candidates. The scan cost is small relative to millisecond-scale model
+execution, and it is paid only when a prefill decision is made; an exact
+per-call microbenchmark figure was measured in development but not committed
+with the repository.
 
 ## Files changed (Phase 6)
 
